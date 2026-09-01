@@ -17,8 +17,8 @@ async function gameLoop() {
       let agents = agentsRes.rows;
 
       for (const agent of agents) {
-        // Busca os status mais recentes do agente
-        const currentAgentRes = await db.query('SELECT hp, water, food, wood, iron, weapon, shield FROM agents WHERE id = $1', [agent.id]);
+        // ⚡ CORREÇÃO: Agora buscamos x e y do banco de dados no início da rodada!
+        const currentAgentRes = await db.query('SELECT hp, water, food, wood, iron, weapon, shield, x, y FROM agents WHERE id = $1', [agent.id]);
         const currentStats = currentAgentRes.rows[0];
         
         if (currentStats.hp <= 0) {
@@ -41,18 +41,32 @@ async function gameLoop() {
         let newWeapon = currentStats.weapon || 0;
         let newShield = currentStats.shield || 0;
         let newHp = currentStats.hp;
+        
+        // 🚶‍♂️ SISTEMA DE MOVIMENTO (Grid 0 a 100)
+        let newX = currentStats.x || 50;
+        let newY = currentStats.y || 50;
+        
+        // O agente caminha aleatoriamente pelo mapa
+        newX += Math.floor(Math.random() * 15) - 7; 
+        newY += Math.floor(Math.random() * 15) - 7;
+
+        // 🧱 PAREDES INVISÍVEIS: Impede que eles saiam do mapa verde
+        if (newX < 5) newX = 5;
+        if (newX > 95) newX = 95;
+        if (newY < 5) newY = 5;
+        if (newY > 95) newY = 95;
 
         // Regras de Clima Normal
         if (world.weather === 'Seca Mortal') newWater -= 10;
         if (world.weather === 'Nevasca Extrema') newFood -= 10;
         if (world.weather === 'Chuva Torrencial') newWater += 10;
         
-        // 🌪️ CLIMA INSTÁVEL: CAOS TOTAL (Agora adicionado no seu código!)
+        // 🌪️ CLIMA INSTÁVEL: CAOS TOTAL
         if (world.weather === 'Clima Instável') {
-          newWater += Math.floor(Math.random() * 30) - 20; // Pode secar muito ou chover um pouco
-          newFood += Math.floor(Math.random() * 30) - 20;  // Comida pode apodrecer ou brotar
+          newWater += Math.floor(Math.random() * 30) - 20; 
+          newFood += Math.floor(Math.random() * 30) - 20;  
           if (Math.random() > 0.7) { 
-            newHp -= 15; // 30% de chance de tomar um raio na cabeça (-15 HP)
+            newHp -= 15; 
           }
         }
 
@@ -93,17 +107,15 @@ async function gameLoop() {
         }
 
         if (targetAgent && (acaoLower.includes('atacar') || acaoLower.includes('roubar') || acaoLower.includes('invadir') || acaoLower.includes('matar'))) {
-          // Busca o escudo do alvo na hora do ataque
           const targetStats = await db.query('SELECT id, shield FROM agents WHERE id = $1', [targetAgent.id]);
           const alvoShield = targetStats.rows[0].shield || 0;
           
-          // Cálculo de Dano
           const danoBase = 20;
-          const danoExtra = newWeapon * 15; // Cada arma dá +15 de dano
-          const defesa = alvoShield * 10; // Cada escudo defende 10
+          const danoExtra = newWeapon * 15; 
+          const defesa = alvoShield * 10; 
           
           let danoFinal = (danoBase + danoExtra) - defesa;
-          if (danoFinal < 0) danoFinal = 0; // Não existe dano negativo
+          if (danoFinal < 0) danoFinal = 0; 
           
           const roubo = 15;
           
@@ -121,22 +133,21 @@ async function gameLoop() {
           );
         }
 
-        // Limites
+        // Limites Vitais
         if (newWater > 100) newWater = 100;
         if (newFood > 100) newFood = 100;
         if (newWater <= 0) { newWater = 0; newHp -= 25; }
         if (newFood <= 0) { newFood = 0; newHp -= 15; }
 
-        // Verifica Morte
         if (newHp <= 0) {
           newHp = 0;
           await db.query('INSERT INTO world_events (tick, type, message) VALUES ($1, $2, $3)', [world.current_tick, 'MORTE', `💀 ${agent.name} sucumbiu e foi eliminado.`]);
         }
 
-        // Salva os novos status no banco
+        // ⚡ CORREÇÃO: Salva os novos status E as coordenadas x, y no banco
         await db.query(
-          'UPDATE agents SET current_action = $1, water = $2, food = $3, hp = $4, wood = $5, iron = $6, weapon = $7, shield = $8 WHERE id = $9', 
-          [decision.acao, newWater, newFood, newHp, newWood, newIron, newWeapon, newShield, agent.id]
+          'UPDATE agents SET current_action = $1, water = $2, food = $3, hp = $4, wood = $5, iron = $6, weapon = $7, shield = $8, x = $9, y = $10 WHERE id = $11', 
+          [decision.acao, newWater, newFood, newHp, newWood, newIron, newWeapon, newShield, newX, newY, agent.id]
         );
         
         await db.query(
@@ -144,7 +155,7 @@ async function gameLoop() {
           [agent.id, decision.memoria, world.current_tick]
         );
 
-        console.log(`🤖 ${agent.name} agiu. HP: ${newHp}`);
+        console.log(`🤖 ${agent.name} andou para [${newX}, ${newY}]. HP: ${newHp}`);
         await sleep(2000); 
       }
       

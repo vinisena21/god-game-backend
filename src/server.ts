@@ -57,6 +57,8 @@ app.post('/api/world/reset', async (req, res) => {
       UPDATE agents 
       SET hp = 100, water = 50, food = 50, 
           wood = 0, iron = 0, weapon = 0, shield = 0, 
+          x = floor(random() * 80) + 10,
+          y = floor(random() * 80) + 10,
           current_action = 'Acordando após o reset do universo'
     `);
     await db.query(
@@ -94,7 +96,8 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
 
 app.get('/api/agents', async (req, res) => {
   try {
-    const agentsRes = await db.query('SELECT id, name, current_action as action, hp, water, food, wood, iron, weapon, shield FROM agents ORDER BY id ASC');
+    // ⚡ CORREÇÃO AQUI: Adicionado x, y na busca do banco!
+    const agentsRes = await db.query('SELECT id, name, current_action as action, hp, water, food, wood, iron, weapon, shield, x, y FROM agents ORDER BY id ASC');
     const agents = agentsRes.rows;
     for (let agent of agents) {
       const memRes = await db.query(

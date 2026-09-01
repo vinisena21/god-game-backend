@@ -51,7 +51,7 @@ export default function App() {
   };
 
   const resetWorld = async () => {
-    if (!window.confirm("⚠️ ALERTA DO CRIADOR: Iniciar o BIG BANG?")) return;
+    if (!window.confirm("⚠️ ALERTA DO CRIADOR: Iniciar o BIG BANG? Isso apaga tudo.")) return;
     setIsChanging(true);
     try {
       await fetch(`${API_URL}/api/world/reset`, { method: 'POST' });
@@ -91,32 +91,36 @@ export default function App() {
           </div>
         </section>
 
-        {/* 🗺️ MAPA DE SOBREVIVÊNCIA 2D */}
+        {/* 🗺️ MAPA DE BIOMAS 2D */}
         <section style={{ flex: '1 1 400px', backgroundColor: '#1a1a1a', padding: '1.5rem', borderRadius: '8px', border: '1px solid #333' }}>
-          <h2 style={{ margin: '0 0 1rem 0' }}>🗺️ Mapa do Mundo</h2>
+          <h2 style={{ margin: '0 0 1rem 0' }}>🗺️ Mapa dos Biomas</h2>
           <div style={{
             position: 'relative', width: '100%', height: '300px', 
-            backgroundColor: '#166534', 
-            backgroundImage: 'linear-gradient(#14532d 1px, transparent 1px), linear-gradient(90deg, #14532d 1px, transparent 1px)', 
-            backgroundSize: '20px 20px', 
             borderRadius: '8px', border: '4px solid #0f172a', overflow: 'hidden'
           }}>
+            {/* O Fundo Dividido em 4 Quadrantes */}
+            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'grid', gridTemplateColumns: '50% 50%', gridTemplateRows: '50% 50%', opacity: 0.8 }}>
+               <div style={{ backgroundColor: '#14532d', borderRight: '1px solid #333', borderBottom: '1px solid #333', display: 'flex', padding: '10px', color: '#fff', fontSize: '0.8rem', fontWeight: 'bold' }}>🌳 Floresta</div>
+               <div style={{ backgroundColor: '#475569', borderBottom: '1px solid #333', display: 'flex', padding: '10px', justifyContent: 'flex-end', color: '#fff', fontSize: '0.8rem', fontWeight: 'bold' }}>⛰️ Montanhas</div>
+               <div style={{ backgroundColor: '#0284c7', borderRight: '1px solid #333', display: 'flex', padding: '10px', alignItems: 'flex-end', color: '#fff', fontSize: '0.8rem', fontWeight: 'bold' }}>🌊 Oásis</div>
+               <div style={{ backgroundColor: '#9a3412', display: 'flex', padding: '10px', justifyContent: 'flex-end', alignItems: 'flex-end', color: '#fff', fontSize: '0.8rem', fontWeight: 'bold' }}>🔥 Deserto</div>
+            </div>
+
+            {/* Grid quadriculado por cima de tudo */}
+            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundImage: 'linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)', backgroundSize: '20px 20px', pointerEvents: 'none' }}></div>
+
             {agents.map(agent => agent.hp > 0 && (
               <div key={agent.id} style={{
                 position: 'absolute',
                 left: `${agent.x}%`, top: `${agent.y}%`,
                 transform: 'translate(-50%, -50%)',
-                transition: 'all 2s ease-in-out', /* A magia do movimento suave! */
-                display: 'flex', flexDirection: 'column', alignItems: 'center', zIndex: agent.hp
+                transition: 'all 2s ease-in-out',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', zIndex: 10
               }}>
                 <div style={{ backgroundColor: '#000', color: '#fff', fontSize: '10px', padding: '2px 6px', borderRadius: '4px', whiteSpace: 'nowrap', marginBottom: '2px', border: '1px solid #333' }}>
                   {agent.name}
                 </div>
-                <div style={{
-                  width: '24px', height: '24px', backgroundColor: '#3b82f6', 
-                  border: '2px solid #fff', borderRadius: '4px',
-                  display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '14px'
-                }}>
+                <div style={{ width: '24px', height: '24px', backgroundColor: '#e2e8f0', border: '2px solid #000', borderRadius: '50%', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '14px', boxShadow: '0 0 5px rgba(0,0,0,0.5)' }}>
                   {agent.weapon > 0 ? '⚔️' : '🤖'}
                 </div>
               </div>

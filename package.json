@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "main": "dist/server.js",
   "scripts": {
-    "dev:server": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts",
     "dev:loop": "tsx watch src/loop.ts"
   },
   "dependencies": {

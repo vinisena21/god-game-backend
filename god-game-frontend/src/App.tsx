@@ -56,6 +56,20 @@ export default function App() {
     } catch (error) {}
   };
 
+  const resetWorld = async () => {
+    if (!window.confirm("⚠️ ALERTA DO CRIADOR: Isso vai apagar toda a história, zerar os inventários e ressuscitar todos os agentes com 100 HP. Tem certeza que deseja iniciar o BIG BANG?")) return;
+    
+    setIsChanging(true);
+    try {
+      await fetch(`${API_URL}/api/world/reset`, { method: 'POST' });
+      fetchData();
+    } catch (error) {
+      console.error("Erro ao resetar:", error);
+    } finally {
+      setIsChanging(false);
+    }
+  };
+
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 5000);
@@ -76,11 +90,16 @@ export default function App() {
           <p><strong>Tick Atual:</strong> {worldState.current_tick}</p>
           <p><strong style={{ color: '#4ade80' }}>Clima:</strong> {worldState.weather}</p>
         </div>
-        <div style={{ display: 'flex', gap: '1rem' }}>
+        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
           <button disabled={isChanging} onClick={() => changeWeather('Ensolarado')} style={btnStyle}>☀️ Sol</button>
           <button disabled={isChanging} onClick={() => changeWeather('Chuva Torrencial')} style={btnStyle}>🌧️ Chuva</button>
           <button disabled={isChanging} onClick={() => changeWeather('Nevasca Extrema')} style={btnStyle}>❄️ Neve</button>
           <button disabled={isChanging} onClick={() => changeWeather('Seca Mortal')} style={btnStyle}>🔥 Seca</button>
+          <button disabled={isChanging} onClick={() => changeWeather('Clima Instável')} style={{ ...btnStyle, backgroundColor: '#4c1d95', borderColor: '#7c3aed' }}>🌪️ Instável</button>
+          
+          <div style={{ flexGrow: 1 }}></div>
+          
+          <button disabled={isChanging} onClick={resetWorld} style={{ ...btnStyle, backgroundColor: '#7f1d1d', borderColor: '#ef4444', fontWeight: 'bold' }}>☄️ BIG BANG (Resetar)</button>
         </div>
       </section>
 
@@ -95,13 +114,11 @@ export default function App() {
                   <span style={{ fontSize: '1rem', color: agent.hp > 20 ? '#ef4444' : '#7f1d1d' }}>❤️ {agent.hp} HP</span>
                 </h3>
                 
-                {/* Status Vitais */}
                 <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.5rem', backgroundColor: '#000', padding: '0.5rem', borderRadius: '6px', border: '1px solid #222' }}>
                   <span style={{ color: '#3b82f6', fontWeight: 'bold' }}>💧 Água: {agent.water}</span>
                   <span style={{ color: '#eab308', fontWeight: 'bold' }}>🍖 Comida: {agent.food}</span>
                 </div>
 
-                {/* Inventário de Crafting */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem', backgroundColor: '#0f172a', padding: '0.5rem', borderRadius: '6px', border: '1px solid #1e293b', fontSize: '0.9rem' }}>
                   <span style={{ color: '#8b5cf6' }}>🪵 Mad: {agent.wood || 0}</span>
                   <span style={{ color: '#94a3b8' }}>⛏️ Fer: {agent.iron || 0}</span>

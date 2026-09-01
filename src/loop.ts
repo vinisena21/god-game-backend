@@ -42,9 +42,19 @@ async function gameLoop() {
         let newShield = currentStats.shield || 0;
         let newHp = currentStats.hp;
 
+        // Regras de Clima Normal
         if (world.weather === 'Seca Mortal') newWater -= 10;
         if (world.weather === 'Nevasca Extrema') newFood -= 10;
         if (world.weather === 'Chuva Torrencial') newWater += 10;
+        
+        // 🌪️ CLIMA INSTÁVEL: CAOS TOTAL (Agora adicionado no seu código!)
+        if (world.weather === 'Clima Instável') {
+          newWater += Math.floor(Math.random() * 30) - 20; // Pode secar muito ou chover um pouco
+          newFood += Math.floor(Math.random() * 30) - 20;  // Comida pode apodrecer ou brotar
+          if (Math.random() > 0.7) { 
+            newHp -= 15; // 30% de chance de tomar um raio na cabeça (-15 HP)
+          }
+        }
 
         const acaoLower = decision.acao?.toLowerCase() || '';
         

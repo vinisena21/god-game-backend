@@ -135,14 +135,14 @@ async function gameLoop() {
         );
 
         console.log(`🤖 ${agent.name} agiu. HP: ${newHp}`);
-        await sleep(5000); 
+        await sleep(2000); 
       }
       
       console.log('✅ Ciclo finalizado!\n');
     } catch (error) {
       console.error('❌ Erro no loop:', error);
     }
-    await sleep(60000);
+    await sleep(15000);
   }
 }
 

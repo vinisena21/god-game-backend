@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 
-// Variável inteligente: se estiver na nuvem usa o link real, se estiver no PC usa o localhost
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3333';
 
 export default function App() {
@@ -43,22 +42,18 @@ export default function App() {
   const sendMiracle = async (agentId: number, name: string) => {
     const text = miracleText[agentId];
     if (!text) return;
-
     try {
       const response = await fetch(`${API_URL}/api/agents/${agentId}/miracle`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text }),
       });
-
       if (response.ok) {
         alert(`⚡ A Voz Divina ecoou na mente de ${name}!`);
         setMiracleText(prev => ({ ...prev, [agentId]: '' }));
         fetchData();
       }
-    } catch (error) {
-      console.error("Erro ao enviar milagre:", error);
-    }
+    } catch (error) {}
   };
 
   useEffect(() => {
@@ -90,10 +85,9 @@ export default function App() {
       </section>
 
       <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
-        {/* Coluna da Esquerda: Agentes */}
         <section style={{ flex: '3 1 600px' }}>
           <h2>🤖 Facções e Inventário</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '1rem' }}>
             {agents.map((agent) => (
               <div key={agent.id} style={{ backgroundColor: '#1a1a1a', padding: '1.5rem', borderRadius: '8px', border: '1px solid #333', opacity: agent.hp <= 0 ? 0.5 : 1 }}>
                 <h3 style={{ marginTop: 0, color: '#4ade80', display: 'flex', justifyContent: 'space-between' }}>
@@ -101,19 +95,27 @@ export default function App() {
                   <span style={{ fontSize: '1rem', color: agent.hp > 20 ? '#ef4444' : '#7f1d1d' }}>❤️ {agent.hp} HP</span>
                 </h3>
                 
-                <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1rem', backgroundColor: '#000', padding: '0.75rem', borderRadius: '6px', border: '1px solid #222' }}>
+                {/* Status Vitais */}
+                <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.5rem', backgroundColor: '#000', padding: '0.5rem', borderRadius: '6px', border: '1px solid #222' }}>
                   <span style={{ color: '#3b82f6', fontWeight: 'bold' }}>💧 Água: {agent.water}</span>
                   <span style={{ color: '#eab308', fontWeight: 'bold' }}>🍖 Comida: {agent.food}</span>
                 </div>
 
+                {/* Inventário de Crafting */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem', backgroundColor: '#0f172a', padding: '0.5rem', borderRadius: '6px', border: '1px solid #1e293b', fontSize: '0.9rem' }}>
+                  <span style={{ color: '#8b5cf6' }}>🪵 Mad: {agent.wood || 0}</span>
+                  <span style={{ color: '#94a3b8' }}>⛏️ Fer: {agent.iron || 0}</span>
+                  <span style={{ color: '#f87171' }}>⚔️ Armas: {agent.weapon || 0}</span>
+                  <span style={{ color: '#60a5fa' }}>🛡️ Def: {agent.shield || 0}</span>
+                </div>
+
                 <p style={{ fontSize: '0.9rem' }}><strong>Ação:</strong> {agent.action}</p>
-                <p style={{ fontSize: '0.9rem', color: '#aaa', minHeight: '40px' }}><strong>Memória:</strong> {agent.memory}</p>
                 
                 {agent.hp > 0 && (
                   <div style={{ display: 'flex', marginTop: '1rem', gap: '0.5rem' }}>
                     <input 
                       type="text" 
-                      placeholder="Sussurrar na mente da IA..."
+                      placeholder="Sussurrar milagre..."
                       value={miracleText[agent.id] || ''}
                       onChange={(e) => setMiracleText(prev => ({ ...prev, [agent.id]: e.target.value }))}
                       style={{ flex: 1, padding: '0.5rem', backgroundColor: '#000', color: '#fff', border: '1px solid #555', borderRadius: '4px' }}
@@ -128,7 +130,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* Coluna da Direita: Livro das Eras */}
         <section style={{ flex: '1 1 300px' }}>
           <h2>📜 Livro das Eras</h2>
           <div style={{ backgroundColor: '#1a1a1a', padding: '1rem', borderRadius: '8px', border: '1px solid #333', maxHeight: '600px', overflowY: 'auto' }}>

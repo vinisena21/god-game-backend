@@ -82,10 +82,11 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
   }
 });
 
-// Rota para pegar agentes
+// Rota para pegar agentes (AQUI ESTÁ A MÁGICA DO CRAFTING)
 app.get('/api/agents', async (req, res) => {
   try {
-    const agentsRes = await db.query('SELECT id, name, current_action as action, hp, water, food FROM agents ORDER BY id ASC');
+    // Adicionamos wood, iron, weapon e shield na busca do banco de dados!
+    const agentsRes = await db.query('SELECT id, name, current_action as action, hp, water, food, wood, iron, weapon, shield FROM agents ORDER BY id ASC');
     const agents = agentsRes.rows;
 
     for (let agent of agents) {

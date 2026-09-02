@@ -4,10 +4,10 @@ import { getAgentDecision } from './ai';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function gameLoop() {
-  console.log('🌍 Motor de Simulação RTS Iniciado...\n');
+  console.log('🌍 Motor de Civilização (Stanford Mode) Iniciado...\n');
 
   while (true) {
-    console.log('⏳ Analisando ecossistema e movendo a fauna...');
+    console.log('⏳ Analisando sociedade...');
     try {
       await db.query('UPDATE world_state SET current_tick = current_tick + 1 WHERE id = 1');
       const worldRes = await db.query('SELECT current_tick, weather FROM world_state WHERE id = 1');
@@ -20,122 +20,124 @@ async function gameLoop() {
       const entRes = await db.query('SELECT * FROM world_entities WHERE hp > 0');
       let entities = entRes.rows;
 
-      // 🐺 INTELIGÊNCIA DOS ANIMAIS (Movem-se antes dos agentes)
+      // Movimento básico dos animais (como antes)
       for (const ent of entities) {
           if (ent.type === 'Cervo') {
-             // Cervo anda aleatoriamente
              let nx = ent.x + (Math.floor(Math.random() * 7) - 3);
              let ny = ent.y + (Math.floor(Math.random() * 7) - 3);
              await db.query('UPDATE world_entities SET x = $1, y = $2 WHERE id = $3', [Math.max(5, Math.min(95, nx)), Math.max(5, Math.min(95, ny)), ent.id]);
           } else if (ent.type === 'Lobo') {
-             // Lobo persegue o agente mais próximo
              let closestAgent = agents.sort((a, b) => (Math.abs(a.x - ent.x) + Math.abs(a.y - ent.y)) - (Math.abs(b.x - ent.x) + Math.abs(b.y - ent.y)))[0];
-             if (closestAgent) {
-                 let dist = Math.abs(closestAgent.x - ent.x) + Math.abs(closestAgent.y - ent.y);
-                 if (dist < 5) {
-                     await db.query('UPDATE agents SET hp = hp - 15 WHERE id = $1', [closestAgent.id]);
-                     await db.query('INSERT INTO world_events (tick, type, message) VALUES ($1, $2, $3)', [world.current_tick, 'NATUREZA', `🐺 Um Lobo atacou ${closestAgent.name}!`]);
-                 } else {
-                     let nx = ent.x + (closestAgent.x > ent.x ? 4 : -4);
-                     let ny = ent.y + (closestAgent.y > ent.y ? 4 : -4);
-                     await db.query('UPDATE world_entities SET x = $1, y = $2 WHERE id = $3', [nx, ny, ent.id]);
-                 }
+             if (closestAgent && (Math.abs(closestAgent.x - ent.x) + Math.abs(closestAgent.y - ent.y) < 5)) {
+                 await db.query('UPDATE agents SET hp = hp - 10 WHERE id = $1', [closestAgent.id]);
              }
           }
       }
 
-      // 🧠 INTELIGÊNCIA DOS AGENTES
+      // 🧠 INTELIGÊNCIA CIVILIZADA DOS AGENTES
       for (const agent of agents) {
         let newX = agent.x; let newY = agent.y;
         
-        // 🌫️ FOG OF WAR: A IA SÓ VÊ O QUE ESTÁ NUM RAIO DE 20 BLOCOS!
-        const nearbyAgents = agents.filter(a => a.id !== agent.id && Math.abs(a.x - agent.x) <= 20 && Math.abs(a.y - agent.y) <= 20)
-                                   .map(a => `[AGENTE ID:${a.id}] ${a.name} em X:${a.x},Y:${a.y}`).join(', ') || 'Nenhum';
-        const nearbyEntities = entities.filter(e => Math.abs(e.x - agent.x) <= 20 && Math.abs(e.y - agent.y) <= 20)
-                                       .map(e => `[${e.type.toUpperCase()} ID:${e.id}] em X:${e.x},Y:${e.y}`).join(', ') || 'Nada na visão';
-        const nearbyStructures = structures.filter(s => Math.abs(s.x - agent.x) <= 20 && Math.abs(s.y - agent.y) <= 20)
-                                       .map(s => `[${s.type} de ${s.agent_name}] em X:${s.x},Y:${s.y}`).join(', ') || 'Nenhuma';
-
-        const promptComStatus = `${agent.system_prompt || 'Você é uma IA sobrevivente.'}\n\n⚠️ SEU STATUS: Vida: ${agent.hp} | Água: ${agent.water} | Comida: ${agent.food} | Mad: ${agent.wood} | Fer: ${agent.iron} | Armas: ${agent.weapon}\nSua Posição: [${newX}, ${newY}].\n\n🌫️ SEU CAMPO DE VISÃO (Raio 20):\nAgentes: ${nearbyAgents}\nRecursos/Fauna: ${nearbyEntities}\nEstruturas: ${nearbyStructures}\n\n🌊 GEOGRAFIA: Um Rio Intransponível corta o mapa verticalmente no Eixo X=50. Tentar cruzar o rio (X=50) sem ponte causa 20 de dano por afogamento.\n\n⚙️ COMANDOS ESPECÍFICOS (Escolha APENAS UM no final):\n- [MOVER_PARA: X, Y]\n- [EXTRAIR: ID] (ID de uma Árvore ou Jazida na visão para coletar recursos)\n- [CAÇAR: ID] (ID de Cervo, Lobo ou Agente na visão)\n- [CONSTRUIR_CASA] (30 Mad. Te protege)\n- [CONSTRUIR_PONTE] (15 Mad. Constrói sobre o rio em X=50 para cruzar seguro)\n- [REPRODUZIR] (Custa 50 Com/Agu, gera um herdeiro)`;
-
-        const decision = await getAgentDecision(agent.name, promptComStatus, world.weather, 'Mundo hostil');
+        const nearbyAgents = agents.filter(a => a.id !== agent.id && Math.abs(a.x - agent.x) <= 25 && Math.abs(a.y - agent.y) <= 25);
+        const agentsString = nearbyAgents.map(a => `[${a.name}] em X:${a.x},Y:${a.y} (Sociedade: ${a.society})`).join(' | ') || 'Ninguém por perto';
         
-        let newWater = agent.water - 5; let newFood = agent.food - 5;
+        // ⚡ Busca o Cérebro Social (Memórias de Relacionamento)
+        const relRes = await db.query('SELECT * FROM agent_relationships WHERE agent_1 = $1 OR agent_2 = $1', [agent.name]);
+        const relationships = relRes.rows.map(r => {
+            const outro = r.agent_1 === agent.name ? r.agent_2 : r.agent_1;
+            return `${outro}: Afinidade ${r.affinity} (${r.history})`;
+        }).join('\n') || 'Nenhuma memória de outras pessoas ainda.';
+
+        // O PROMPT HUMANIZADO
+        const promptComStatus = `${agent.system_prompt || 'Você é uma IA viva.'}\n\n⚠️ SEU STATUS (Fome e sede agora são lentas, você tem tempo para pensar!)\nVida: ${agent.hp} | Água: ${agent.water} | Comida: ${agent.food} | Mad: ${agent.wood} | Fer: ${agent.iron}\nPosição: [${newX}, ${newY}].\n\n🧠 SUAS MEMÓRIAS SOCIAIS (Afinidade > 50 = Amigo, < 0 = Inimigo):\n${relationships}\n\n👁️ NA SUA VISÃO AGORA:\nPessoas: ${agentsString}\n\n⚙️ COMANDOS (Escolha APENAS UM no final da sua reflexão):\n- [INTERAGIR: NomeDoAlvo, Sua Mensagem] (Conversa, negocia ou filosofa com alguém na sua visão)\n- [MOVER_PARA: X, Y] (Viaja para um lugar)\n- [EXTRAIR: ID] (Coleta recursos se tiver na visão)\n- [CONSTRUIR_CASA] (30 Mad)\n- [ALIANÇA: NomeDoAlvo] (Tenta recrutar para sua sociedade, aumenta afinidade)\n- [ATACAR: NomeDoAlvo] (Abaixa afinidade drasticamente)`;
+
+        const decision = await getAgentDecision(agent.name, promptComStatus, world.weather, 'Mundo Pacífico');
+        
+        // ⚡ FOME E SEDE LENTAS (Eles não vão morrer rápido!)
+        let newWater = agent.water - 1; 
+        let newFood = agent.food - 1;
         let newWood = agent.wood || 0; let newIron = agent.iron || 0;
         let newHp = agent.hp; let newSociety = agent.society;
 
         const myHouses = structures.filter(s => s.agent_name === agent.name && s.type === 'Casa');
-        const isHome = myHouses.some(h => Math.abs(h.x - newX) <= 5 && Math.abs(h.y - newY) <= 5);
-        if (isHome) { newHp += 10; newWater += 5; newFood += 5; }
-
-        if (world.weather === 'Seca Mortal' && !isHome) newWater -= 10;
-        if (world.weather === 'Clima Instável' && !isHome && Math.random() > 0.7) newHp -= 20;
+        if (myHouses.some(h => Math.abs(h.x - newX) <= 5 && Math.abs(h.y - newY) <= 5)) { 
+            newHp += 5; newWater += 1; newFood += 1; 
+        }
 
         const match = decision.acao.match(/\[(.*?)\]/);
-        let command = "MOVER_PARA"; let param = "50,50";
+        let command = "REFLETIR"; let param = ""; let param2 = "";
         if (match) {
             const parts = match[1].split(':');
             command = parts[0].trim();
-            if (parts.length > 1) param = parts[1].trim();
+            if (parts.length > 1) {
+                const subParts = parts[1].split(',');
+                param = subParts[0]?.trim();
+                param2 = subParts.slice(1).join(',').trim();
+            }
         }
 
-        let logAcao = `Tentou: ${command}`;
+        let logAcao = `Refletiu sobre a vida.`;
 
         if (command === 'MOVER_PARA' && param) {
             const coords = param.split(',');
             const tX = parseInt(coords[0]); const tY = parseInt(coords[1]);
             if (!isNaN(tX) && !isNaN(tY)) {
-                let oldX = newX;
-                newX += Math.round(((tX - newX) / (Math.abs(tX - newX) || 1)) * Math.min(10, Math.abs(tX - newX)));
-                newY += Math.round(((tY - newY) / (Math.abs(tY - newY) || 1)) * Math.min(10, Math.abs(tY - newY)));
-                
-                // 🌊 FÍSICA DO RIO
-                if ((oldX < 50 && newX >= 50) || (oldX > 50 && newX <= 50) || newX === 50) {
-                    const bridge = structures.find(s => s.type === 'Ponte' && s.x === 50 && Math.abs(s.y - newY) <= 8);
-                    if (!bridge) {
-                        newHp -= 20;
-                        logAcao = `Cruzou o rio nadando e quase afogou (-20 HP). Chegou em [${newX}, ${newY}].`;
-                    } else {
-                        logAcao = `Cruzou o rio em segurança pela Ponte! Chegou em [${newX}, ${newY}].`;
-                    }
-                } else {
-                    logAcao = `Caminhou para [${newX}, ${newY}].`;
-                }
+                newX += Math.round(((tX - newX) / (Math.abs(tX - newX) || 1)) * Math.min(8, Math.abs(tX - newX)));
+                newY += Math.round(((tY - newY) / (Math.abs(tY - newY) || 1)) * Math.min(8, Math.abs(tY - newY)));
+                logAcao = `Caminhou para [${newX}, ${newY}].`;
             }
         } 
+        else if (command === 'INTERAGIR' && param && param2) {
+            // IA conversando com IA!
+            logAcao = `Disse para ${param}: "${param2}"`;
+            await db.query('INSERT INTO world_events (tick, type, message) VALUES ($1, $2, $3)', [world.current_tick, 'DIÁLOGO', `🗣️ ${agent.name} para ${param}: "${param2}"`]);
+            
+            // Aumenta levemente a afinidade por conversarem
+            const checkRel = await db.query('SELECT id, affinity FROM agent_relationships WHERE (agent_1 = $1 AND agent_2 = $2) OR (agent_1 = $2 AND agent_2 = $1)', [agent.name, param]);
+            if (checkRel.rows.length > 0) {
+                await db.query('UPDATE agent_relationships SET affinity = affinity + 5 WHERE id = $1', [checkRel.rows[0].id]);
+            } else {
+                await db.query('INSERT INTO agent_relationships (agent_1, agent_2, affinity, history) VALUES ($1, $2, 10, $3)', [agent.name, param, 'Tiveram uma conversa amigável.']);
+            }
+        }
+        else if (command === 'ALIANÇA' && param) {
+            logAcao = `Ofereceu aliança diplomática para ${param}.`;
+            await db.query('INSERT INTO world_events (tick, type, message) VALUES ($1, $2, $3)', [world.current_tick, 'DIPLOMACIA', `🤝 ${agent.name} ofereceu uma Aliança para ${param}!`]);
+            const checkRel = await db.query('SELECT id FROM agent_relationships WHERE (agent_1 = $1 AND agent_2 = $2) OR (agent_1 = $2 AND agent_2 = $1)', [agent.name, param]);
+            if (checkRel.rows.length > 0) {
+                await db.query("UPDATE agent_relationships SET affinity = affinity + 30, history = 'Firmaram um acordo de paz e aliança.' WHERE id = $1", [checkRel.rows[0].id]);
+            } else {
+                await db.query("INSERT INTO agent_relationships (agent_1, agent_2, affinity, history) VALUES ($1, $2, 50, 'Firmaram aliança imediatamente.')", [agent.name, param]);
+            }
+        }
+        else if (command === 'ATACAR' && param) {
+            const targetAgent = agents.find(a => a.name === param);
+            if (targetAgent) {
+                await db.query('UPDATE agents SET hp = GREATEST(hp - 15, 0) WHERE id = $1', [targetAgent.id]);
+                logAcao = `Atacou ${param} quebrando a paz!`;
+                await db.query('INSERT INTO world_events (tick, type, message) VALUES ($1, $2, $3)', [world.current_tick, 'CONFLITO', `⚔️ ${agent.name} traiu a paz e atacou ${param}!`]);
+                
+                const checkRel = await db.query('SELECT id FROM agent_relationships WHERE (agent_1 = $1 AND agent_2 = $2) OR (agent_1 = $2 AND agent_2 = $1)', [agent.name, param]);
+                if (checkRel.rows.length > 0) {
+                    await db.query("UPDATE agent_relationships SET affinity = affinity - 50, history = 'Rixa mortal após ataque.' WHERE id = $1", [checkRel.rows[0].id]);
+                } else {
+                    await db.query("INSERT INTO agent_relationships (agent_1, agent_2, affinity, history) VALUES ($1, $2, -50, 'Inimigos declarados.')", [agent.name, param]);
+                }
+            }
+        }
         else if (command === 'EXTRAIR' && param) {
-            const targetId = parseInt(param);
-            const alvo = entities.find(e => e.id === targetId);
+            const alvo = entities.find(e => e.id === parseInt(param));
             if (alvo && Math.abs(alvo.x - newX) <= 15) {
-                if (alvo.type === 'Árvore Anciã') { newWood += alvo.resource_amount; logAcao = 'Derrubou uma árvore colossal!'; }
-                if (alvo.type === 'Jazida de Ouro') { newIron += alvo.resource_amount; logAcao = 'Minerou ouro/ferro brilhante!'; }
-                await db.query('DELETE FROM world_entities WHERE id = $1', [targetId]);
-            } else logAcao = 'Tentou extrair algo fora de alcance ou inexistente.';
+                if (alvo.type === 'Árvore Anciã') newWood += alvo.resource_amount;
+                if (alvo.type === 'Jazida de Ouro') newIron += alvo.resource_amount;
+                await db.query('DELETE FROM world_entities WHERE id = $1', [alvo.id]);
+                logAcao = `Extraiu recursos do mapa.`;
+            } else logAcao = 'Coletando recursos pelo chão.';
         }
-        else if (command === 'CAÇAR' && param) {
-            const targetId = parseInt(param);
-            const mob = entities.find(e => e.id === targetId);
-            if (mob && Math.abs(mob.x - newX) <= 15) {
-                if (mob.type === 'Cervo') { newFood += mob.resource_amount; logAcao = 'Caçou um Cervo com sucesso!'; }
-                if (mob.type === 'Lobo') { logAcao = 'Matou um Lobo feroz em defesa!'; }
-                await db.query('DELETE FROM world_entities WHERE id = $1', [targetId]);
-                await db.query('INSERT INTO world_events (tick, type, message) VALUES ($1, $2, $3)', [world.current_tick, 'CAÇA', `🏹 ${agent.name} abateu um ${mob.type}!`]);
-            }
-        }
-        else if (command === 'CONSTRUIR_CASA') {
-            if (newWood >= 30) {
-                newWood -= 30;
-                await db.query('INSERT INTO world_structures (agent_name, type, x, y, hp) VALUES ($1, $2, $3, $4, 150)', [agent.name, 'Casa', newX, newY]);
-                logAcao = 'Ergueu uma Casa.';
-            }
-        }
-        else if (command === 'CONSTRUIR_PONTE') {
-            if (newWood >= 15) {
-                newWood -= 15;
-                await db.query('INSERT INTO world_structures (agent_name, type, x, y, hp) VALUES ($1, $2, $3, $4, 300)', [agent.name, 'Ponte', 50, newY]);
-                await db.query('INSERT INTO world_events (tick, type, message) VALUES ($1, $2, $3)', [world.current_tick, 'ENGENHARIA', `🌉 ${agent.name} construiu uma Ponte sobre o Rio!`]);
-                logAcao = 'Construiu uma ponte majestosa.';
-            }
+        else if (command === 'CONSTRUIR_CASA' && newWood >= 30) {
+            newWood -= 30;
+            await db.query('INSERT INTO world_structures (agent_name, type, x, y, hp) VALUES ($1, $2, $3, $4, 150)', [agent.name, 'Casa', newX, newY]);
+            logAcao = 'Ergueu uma Casa.';
         }
 
         if (newX < 5) newX = 5; if (newX > 95) newX = 95;
@@ -143,14 +145,14 @@ async function gameLoop() {
 
         if (newHp <= 0) {
           newHp = 0;
-          await db.query('INSERT INTO world_events (tick, type, message) VALUES ($1, $2, $3)', [world.current_tick, 'MORTE', `💀 ${agent.name} colapsou na natureza.`]);
+          await db.query('INSERT INTO world_events (tick, type, message) VALUES ($1, $2, $3)', [world.current_tick, 'MORTE', `💀 ${agent.name} faleceu na ilha.`]);
         }
 
         await db.query(
           'UPDATE agents SET current_action = $1, water = $2, food = $3, hp = $4, wood = $5, iron = $6, x = $7, y = $8 WHERE id = $9', 
-          [logAcao, Math.max(0, Math.min(100, newWater)), Math.max(0, Math.min(100, newFood)), newHp, newWood, newIron, newX, newY, agent.id]
+          [logAcao, Math.max(0, newWater), Math.max(0, newFood), newHp, newWood, newIron, newX, newY, agent.id]
         );
-        console.log(`🤖 ${agent.name} executou: ${logAcao}`);
+        console.log(`🤖 ${agent.name}: ${logAcao}`);
         await sleep(2000); 
       }
       console.log('✅ Ciclo finalizado!\n');

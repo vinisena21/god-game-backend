@@ -1,26 +1,22 @@
 import { db } from './db';
-import { getAgentDecision } from './ai';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function gameLoop() {
-  console.log('🚀 Motor Físico Assíncrono Iniciado (Modo Performance)...\n');
+  console.log('🚀 Motor Físico Assíncrono Iniciado (Modo Performance Individual)...\n');
 
   while (true) {
     try {
-      // 1. Atualiza o Tick Global
       await db.query('UPDATE world_state SET current_tick = current_tick + 1 WHERE id = 1');
       const worldRes = await db.query('SELECT current_tick, weather FROM world_state WHERE id = 1');
       const world = worldRes.rows[0];
       
       const agentsRes = await db.query('SELECT * FROM agents WHERE hp > 0 ORDER BY id ASC');
       let agents = agentsRes.rows;
-      const structRes = await db.query('SELECT * FROM world_structures');
-      let structures = structRes.rows;
       const entRes = await db.query('SELECT * FROM world_entities WHERE hp > 0');
-      let entities = entRes.rows;
+      let entities = entRes.rows; // Lista de recursos do mapa
 
-      // 2. Processamento Local da Fauna (Sem travar na API)
+      // Move a fauna
       for (const ent of entities) {
         if (ent.type === 'Cervo') {
           let nx = Math.max(5, Math.min(95, ent.x + (Math.floor(Math.random() * 5) - 2)));
@@ -29,7 +25,7 @@ async function gameLoop() {
         }
       }
 
-      // 3. Execução dos Agentes
+      // IA Individual
       for (const agent of agents) {
         let newX = agent.x;
         let newY = agent.y;
@@ -38,53 +34,76 @@ async function gameLoop() {
         let newHp = agent.hp;
         let newWood = agent.wood || 0;
         let newIron = agent.iron || 0;
+        let logAcao = 'Refletindo sobre a ilha...';
 
-        // Movimento autônomo leve se não houver ordem crítica
-        // O agente busca o recurso ou estrutura mais próxima visualmente
-        const targetEntity = entities[0];
-        let logAcao = 'Explorando e coletando recursos da ilha.';
+        // ⚡ A CORREÇÃO: Cada IA vasculha a lista e acha o alvo MAIS PRÓXIMO dela!
+        let targetEntity = null;
+        let minDist = Infinity;
+        for (const ent of entities) {
+          const dx = ent.x - newX;
+          const dy = ent.y - newY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < minDist) {
+            minDist = dist;
+            targetEntity = ent;
+          }
+        }
 
         if (targetEntity) {
           const dx = targetEntity.x - newX;
           const dy = targetEntity.y - newY;
           const dist = Math.sqrt(dx * dx + dy * dy);
 
-          if (dist > 5) {
-            // Anda na direção do recurso
+          if (dist > 3) {
+            // Anda na direção do SEU PRÓPRIO alvo
             newX += Math.round((dx / dist) * Math.min(4, dist));
             newY += Math.round((dy / dist) * Math.min(4, dist));
-            logAcao = `Movendo-se em direção a ${targetEntity.type} [${targetEntity.x}, ${targetEntity.y}]`;
+            logAcao = `Viajando até ${targetEntity.type} em [${targetEntity.x}, ${targetEntity.y}]`;
           } else {
-            // Chegou no recurso, coleta!
+            // Chegou no alvo!
             if (targetEntity.type === 'Árvore Anciã') {
               newWood += targetEntity.resource_amount;
-              logAcao = `Coletou madeira de ${targetEntity.type}`;
+              logAcao = `Derrubou e coletou madeira.`;
             } else if (targetEntity.type === 'Jazida de Ouro') {
               newIron += targetEntity.resource_amount;
-              logAcao = `Minerou recursos de ${targetEntity.type}`;
+              logAcao = `Minerou ouro com sucesso.`;
+            } else if (targetEntity.type === 'Cervo') {
+              newFood += targetEntity.resource_amount;
+              logAcao = `Caçou um Cervo!`;
             }
+            
+            // Deleta do banco de dados pra ninguém mais tentar pegar
             await db.query('DELETE FROM world_entities WHERE id = $1', [targetEntity.id]);
+            // Tira da memória local pro próximo agente na fila não ir atrás de fantasma
+            entities = entities.filter(e => e.id !== targetEntity.id);
           }
+        } else {
+           // Se não tiver alvo, anda de forma orgânica e dispersa pelo mapa
+           newX += (Math.floor(Math.random() * 9) - 4);
+           newY += (Math.floor(Math.random() * 9) - 4);
+           logAcao = 'Explorando o mapa livremente.';
         }
 
-        // Limites físicos da ilha
+        // 🏠 IA Construtora: Se juntou madeira, faz a casa e espalha a civilização!
+        if (newWood >= 50) {
+           await db.query('INSERT INTO world_structures (agent_name, type, x, y, hp) VALUES ($1, $2, $3, $4, 150)', [agent.name, 'Casa', newX, newY]);
+           newWood -= 30; // Gasta a madeira
+           logAcao = `Ergueu uma Casa em [${newX}, ${newY}]!`;
+        }
+
+        // Não deixa sair da ilha
         newX = Math.max(5, Math.min(95, newX));
         newY = Math.max(5, Math.min(95, newY));
 
-        // Salva o estado atualizado instantaneamente no banco
         await db.query(
           'UPDATE agents SET current_action = $1, water = $2, food = $3, hp = $4, wood = $5, iron = $6, x = $7, y = $8 WHERE id = $9',
           [logAcao, newWater, newFood, newHp, newWood, newIron, newX, newY, agent.id]
         );
       }
-
-      console.log(`✅ Tick ${world.current_tick} processado com sucesso.`);
     } catch (error) {
-      console.error('❌ Erro no loop assíncrono:', error);
+      console.error('❌ Erro no loop:', error);
     }
-    
-    // Intervalo reduzido para dar fluidez real ao jogo
-    await sleep(6000);
+    await sleep(3000); // Roda a cada 3 segundos pra ficar bem fluido
   }
 }
 

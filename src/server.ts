@@ -29,7 +29,6 @@ app.get('/api/world/events', async (req, res) => {
   }
 });
 
-// ⚡ NOVA ROTA: Busca as estruturas físicas do mapa
 app.get('/api/world/structures', async (req, res) => {
   try {
     const structRes = await db.query('SELECT * FROM world_structures');
@@ -63,17 +62,20 @@ app.post('/api/world/reset', async (req, res) => {
     await db.query("UPDATE world_state SET current_tick = 0, weather = 'Ensolarado' WHERE id = 1");
     await db.query('DELETE FROM world_events');
     await db.query('DELETE FROM agent_memories');
-    await db.query('DELETE FROM world_structures'); // Limpa o mapa no reset
+    await db.query('DELETE FROM world_structures');
+    // Mantemos apenas os agentes originais (IDs 1 a 4, ou os que você criou de base)
+    await db.query('DELETE FROM agents WHERE id > 4'); 
     await db.query(`
       UPDATE agents 
       SET hp = 100, water = 50, food = 50, 
           wood = 0, iron = 0, weapon = 0, shield = 0, 
           x = floor(random() * 80) + 10,
           y = floor(random() * 80) + 10,
+          society = 'Nenhuma',
           current_action = 'Acordando após o reset do universo'
     `);
     await db.query(
-      "INSERT INTO world_events (tick, type, message) VALUES (0, 'BIG BANG', 'O Criador resetou o universo. O mapa está limpo.')"
+      "INSERT INTO world_events (tick, type, message) VALUES (0, 'BIG BANG', 'O Criador resetou o universo. As vidas artificiais reiniciaram.')"
     );
     res.json({ message: 'Mundo resetado com sucesso!' });
   } catch (error) {
@@ -107,7 +109,8 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
 
 app.get('/api/agents', async (req, res) => {
   try {
-    const agentsRes = await db.query('SELECT id, name, current_action as action, hp, water, food, wood, iron, weapon, shield, x, y FROM agents ORDER BY id ASC');
+    // ⚡ Adicionado 'society' na busca
+    const agentsRes = await db.query('SELECT id, name, current_action as action, hp, water, food, wood, iron, weapon, shield, x, y, society FROM agents ORDER BY id ASC');
     const agents = agentsRes.rows;
     for (let agent of agents) {
       const memRes = await db.query(

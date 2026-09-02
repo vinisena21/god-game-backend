@@ -29,6 +29,17 @@ app.get('/api/world/events', async (req, res) => {
   }
 });
 
+// ⚡ NOVA ROTA: Busca as estruturas físicas do mapa
+app.get('/api/world/structures', async (req, res) => {
+  try {
+    const structRes = await db.query('SELECT * FROM world_structures');
+    res.json(structRes.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro ao buscar estruturas' });
+  }
+});
+
 app.post('/api/world/weather', async (req, res) => {
   const { weather } = req.body;
   if (!weather) return res.status(400).json({ error: 'Clima não fornecido' });
@@ -47,12 +58,12 @@ app.post('/api/world/weather', async (req, res) => {
   }
 });
 
-// ⚡ NOVA ROTA: RESET DO UNIVERSO
 app.post('/api/world/reset', async (req, res) => {
   try {
     await db.query("UPDATE world_state SET current_tick = 0, weather = 'Ensolarado' WHERE id = 1");
     await db.query('DELETE FROM world_events');
     await db.query('DELETE FROM agent_memories');
+    await db.query('DELETE FROM world_structures'); // Limpa o mapa no reset
     await db.query(`
       UPDATE agents 
       SET hp = 100, water = 50, food = 50, 
@@ -62,7 +73,7 @@ app.post('/api/world/reset', async (req, res) => {
           current_action = 'Acordando após o reset do universo'
     `);
     await db.query(
-      "INSERT INTO world_events (tick, type, message) VALUES (0, 'BIG BANG', 'O Criador resetou o universo. Uma nova era começa agora.')"
+      "INSERT INTO world_events (tick, type, message) VALUES (0, 'BIG BANG', 'O Criador resetou o universo. O mapa está limpo.')"
     );
     res.json({ message: 'Mundo resetado com sucesso!' });
   } catch (error) {
@@ -96,7 +107,6 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
 
 app.get('/api/agents', async (req, res) => {
   try {
-    // ⚡ CORREÇÃO AQUI: Adicionado x, y na busca do banco!
     const agentsRes = await db.query('SELECT id, name, current_action as action, hp, water, food, wood, iron, weapon, shield, x, y FROM agents ORDER BY id ASC');
     const agents = agentsRes.rows;
     for (let agent of agents) {

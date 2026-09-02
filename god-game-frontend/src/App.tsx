@@ -5,6 +5,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3333';
 export default function App() {
   const [worldState, setWorldState] = useState({ current_tick: 0, weather: 'Carregando...' });
   const [agents, setAgents] = useState<any[]>([]);
+  const [structures, setStructures] = useState<any[]>([]);
   const [events, setEvents] = useState<any[]>([]);
   const [isChanging, setIsChanging] = useState(false);
   const [miracleText, setMiracleText] = useState<{ [key: number]: string }>({});
@@ -13,8 +14,13 @@ export default function App() {
     try {
       const worldRes = await fetch(`${API_URL}/api/world`);
       if (worldRes.ok) setWorldState(await worldRes.json());
+      
       const agentsRes = await fetch(`${API_URL}/api/agents`);
       if (agentsRes.ok) setAgents(await agentsRes.json());
+      
+      const structRes = await fetch(`${API_URL}/api/world/structures`);
+      if (structRes.ok) setStructures(await structRes.json());
+
       const eventsRes = await fetch(`${API_URL}/api/world/events`);
       if (eventsRes.ok) setEvents(await eventsRes.json());
     } catch (error) {}
@@ -91,24 +97,34 @@ export default function App() {
           </div>
         </section>
 
-        {/* 🗺️ MAPA DE BIOMAS 2D */}
+        {/* 🗺️ MAPA DE BIOMAS E BLOCOS */}
         <section style={{ flex: '1 1 400px', backgroundColor: '#1a1a1a', padding: '1.5rem', borderRadius: '8px', border: '1px solid #333' }}>
           <h2 style={{ margin: '0 0 1rem 0' }}>🗺️ Mapa dos Biomas</h2>
           <div style={{
             position: 'relative', width: '100%', height: '300px', 
             borderRadius: '8px', border: '4px solid #0f172a', overflow: 'hidden'
           }}>
-            {/* O Fundo Dividido em 4 Quadrantes */}
             <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'grid', gridTemplateColumns: '50% 50%', gridTemplateRows: '50% 50%', opacity: 0.8 }}>
                <div style={{ backgroundColor: '#14532d', borderRight: '1px solid #333', borderBottom: '1px solid #333', display: 'flex', padding: '10px', color: '#fff', fontSize: '0.8rem', fontWeight: 'bold' }}>🌳 Floresta</div>
                <div style={{ backgroundColor: '#475569', borderBottom: '1px solid #333', display: 'flex', padding: '10px', justifyContent: 'flex-end', color: '#fff', fontSize: '0.8rem', fontWeight: 'bold' }}>⛰️ Montanhas</div>
                <div style={{ backgroundColor: '#0284c7', borderRight: '1px solid #333', display: 'flex', padding: '10px', alignItems: 'flex-end', color: '#fff', fontSize: '0.8rem', fontWeight: 'bold' }}>🌊 Oásis</div>
                <div style={{ backgroundColor: '#9a3412', display: 'flex', padding: '10px', justifyContent: 'flex-end', alignItems: 'flex-end', color: '#fff', fontSize: '0.8rem', fontWeight: 'bold' }}>🔥 Deserto</div>
             </div>
-
-            {/* Grid quadriculado por cima de tudo */}
             <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundImage: 'linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)', backgroundSize: '20px 20px', pointerEvents: 'none' }}></div>
 
+            {/* Renderiza as Estruturas (Muralhas e Fazendas) */}
+            {structures.map(struct => (
+              <div key={struct.id} style={{
+                position: 'absolute',
+                left: `${struct.x}%`, top: `${struct.y}%`,
+                transform: 'translate(-50%, -50%)',
+                fontSize: '18px', zIndex: 5
+              }}>
+                {struct.type === 'Muralha' ? '🧱' : '🌾'}
+              </div>
+            ))}
+
+            {/* Renderiza os Agentes */}
             {agents.map(agent => agent.hp > 0 && (
               <div key={agent.id} style={{
                 position: 'absolute',
@@ -149,7 +165,6 @@ export default function App() {
                   <span style={{ color: '#8b5cf6' }}>🪵 Mad: {agent.wood || 0}</span>
                   <span style={{ color: '#94a3b8' }}>⛏️ Fer: {agent.iron || 0}</span>
                   <span style={{ color: '#f87171' }}>⚔️ Arm: {agent.weapon || 0}</span>
-                  <span style={{ color: '#60a5fa' }}>🛡️ Def: {agent.shield || 0}</span>
                   <span style={{ color: '#a3e635' }}>📍 [{agent.x}, {agent.y}]</span>
                 </div>
 

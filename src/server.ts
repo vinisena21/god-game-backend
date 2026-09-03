@@ -96,3 +96,32 @@ const PORT = process.env.PORT || 3333;
 app.listen(PORT, () => console.log(`🚀 API rodando na porta ${PORT}`));
 
 import './loop';
+// ⚡ ROTA: A MÃO DE DEUS
+app.post('/api/world/god-action', async (req, res) => {
+  const { action, x, y } = req.body;
+  
+  try {
+    const tickRes = await db.query('SELECT current_tick FROM world_state WHERE id = 1');
+    const tick = tickRes.rows[0].current_tick;
+
+    if (action === 'RAIO') {
+       // Mata qualquer IA que estiver num raio de 5 blocos do clique
+       await db.query('UPDATE agents SET hp = 0 WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5', [x, y]);
+       // Destrói qualquer casa no raio
+       await db.query('DELETE FROM world_structures WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5', [x, y]);
+       // Registra na história
+       await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'PUNIÇÃO', $2)", [tick, `⚡ A Mão de Deus disparou um RAIO nas coordenadas [${x}, ${y}]!`]);
+    } 
+    else if (action === 'MILAGRE') {
+       // Brota uma árvore no local do clique
+       await db.query("INSERT INTO world_entities (type, x, y, resource_amount) VALUES ('Árvore Anciã', $1, $2, 50)", [x, y]);
+       // Registra na história
+       await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'MILAGRE', $2)", [tick, `✨ Um milagre divino fez brotar uma Árvore em [${x}, ${y}]!`]);
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Erro na intervenção divina:', error);
+    res.status(500).json({ error: 'Falha divina' });
+  }
+});

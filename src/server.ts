@@ -1,4 +1,6 @@
 import express from 'express';
+import http from 'http';
+import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { db } from './db';
@@ -8,6 +10,43 @@ dotenv.config();
 const app = express();
 app.use(cors()); 
 app.use(express.json());
+
+// ⚡ 1. Acoplando o Socket.io ao servidor Express
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: '*' } // Permite que o seu Frontend da Vercel conecte aqui
+});
+
+io.on('connection', (socket) => {
+  console.log('⚡ Novo Diretor de Arte conectado no Socket! ID:', socket.id);
+});
+
+// ⚡ 2. O CORAÇÃO DO TEMPO REAL (Transmissão a 4 FPS)
+setInterval(async () => {
+  try {
+    const worldRes = await db.query('SELECT current_tick, weather FROM world_state WHERE id = 1');
+    const agentsRes = await db.query('SELECT id, name, current_action as action, hp, water, food, wood, iron, weapon, shield, x, y, society FROM agents WHERE hp > 0 ORDER BY id ASC');
+    const structRes = await db.query('SELECT * FROM world_structures');
+    const entRes = await db.query('SELECT * FROM world_entities WHERE hp > 0');
+    const eventsRes = await db.query('SELECT * FROM world_events ORDER BY id DESC LIMIT 50');
+
+    // Empurra os dados via WebSockets instantaneamente
+    io.emit('gameState', {
+      world: worldRes.rows[0],
+      agents: agentsRes.rows,
+      structures: structRes.rows,
+      entities: entRes.rows,
+      events: eventsRes.rows
+    });
+  } catch (error) {
+    // Ignora pequenos conflitos de leitura simultânea para não travar o loop
+  }
+}, 250); 
+
+
+// ==========================================
+// 🛣️ ROTAS DA API HTTP (Restauradas e Organizadas)
+// ==========================================
 
 app.get('/api/world', async (req, res) => {
   try {
@@ -53,7 +92,7 @@ app.post('/api/world/reset', async (req, res) => {
     await db.query('DELETE FROM world_events');
     await db.query('DELETE FROM agent_memories');
     await db.query('DELETE FROM world_structures');
-    await db.query('DELETE FROM agent_relationships'); // ⚡ Limpa o cérebro social
+    await db.query('DELETE FROM agent_relationships'); 
     await db.query("DELETE FROM agents WHERE name LIKE '%Jr.%'"); 
     
     await db.query('DELETE FROM world_entities');
@@ -87,41 +126,40 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
 app.get('/api/agents', async (req, res) => {
   try {
     const agentsRes = await db.query('SELECT id, name, current_action as action, hp, water, food, wood, iron, weapon, shield, x, y, society FROM agents ORDER BY id ASC');
-    const agents = agentsRes.rows;
-    res.json(agents);
+    res.json(agentsRes.rows);
   } catch (error) { res.status(500).json({ error: 'Erro' }); }
 });
 
-const PORT = process.env.PORT || 3333;
-app.listen(PORT, () => console.log(`🚀 API rodando na porta ${PORT}`));
-
-import './loop';
-// ⚡ ROTA: A MÃO DE DEUS
+// ⚡ A Rota da Mão de Deus (agora no lugar certo)
 app.post('/api/world/god-action', async (req, res) => {
   const { action, x, y } = req.body;
-  
   try {
     const tickRes = await db.query('SELECT current_tick FROM world_state WHERE id = 1');
     const tick = tickRes.rows[0].current_tick;
 
     if (action === 'RAIO') {
-       // Mata qualquer IA que estiver num raio de 5 blocos do clique
        await db.query('UPDATE agents SET hp = 0 WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5', [x, y]);
-       // Destrói qualquer casa no raio
        await db.query('DELETE FROM world_structures WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5', [x, y]);
-       // Registra na história
        await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'PUNIÇÃO', $2)", [tick, `⚡ A Mão de Deus disparou um RAIO nas coordenadas [${x}, ${y}]!`]);
     } 
     else if (action === 'MILAGRE') {
-       // Brota uma árvore no local do clique
        await db.query("INSERT INTO world_entities (type, x, y, resource_amount) VALUES ('Árvore Anciã', $1, $2, 50)", [x, y]);
-       // Registra na história
        await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'MILAGRE', $2)", [tick, `✨ Um milagre divino fez brotar uma Árvore em [${x}, ${y}]!`]);
     }
-    
     res.json({ success: true });
   } catch (error) {
     console.error('Erro na intervenção divina:', error);
     res.status(500).json({ error: 'Falha divina' });
   }
 });
+
+// ==========================================
+// 🚀 INICIALIZAÇÃO DO SERVIDOR (Atenção aqui!)
+// ==========================================
+const PORT = process.env.PORT || 3333;
+
+// Tem que ser server.listen e não app.listen, pro WebSocket funcionar junto com a API!
+server.listen(PORT, () => console.log(`🔥 Servidor c/ WebSocket bombando na porta ${PORT}`));
+
+// Inicia o motor físico do jogo no background
+import './loop';

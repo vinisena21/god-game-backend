@@ -14,7 +14,7 @@ app.use(express.json());
 // ⚡ 1. Acoplando o Socket.io ao servidor Express
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' } // Permite que o seu Frontend da Vercel conecte aqui
+  cors: { origin: '*' }
 });
 
 io.on('connection', (socket) => {
@@ -30,7 +30,6 @@ setInterval(async () => {
     const entRes = await db.query('SELECT * FROM world_entities WHERE hp > 0');
     const eventsRes = await db.query('SELECT * FROM world_events ORDER BY id DESC LIMIT 50');
 
-    // Empurra os dados via WebSockets instantaneamente
     io.emit('gameState', {
       world: worldRes.rows[0],
       agents: agentsRes.rows,
@@ -43,9 +42,8 @@ setInterval(async () => {
   }
 }, 250); 
 
-
 // ==========================================
-// 🛣️ ROTAS DA API HTTP (Restauradas e Organizadas)
+// 🛣️ ROTAS DA API HTTP (Intactas)
 // ==========================================
 
 app.get('/api/world', async (req, res) => {
@@ -130,7 +128,7 @@ app.get('/api/agents', async (req, res) => {
   } catch (error) { res.status(500).json({ error: 'Erro' }); }
 });
 
-// ⚡ A Rota da Mão de Deus (agora no lugar certo)
+// ⚡ A Rota da Mão de Deus
 app.post('/api/world/god-action', async (req, res) => {
   const { action, x, y } = req.body;
   try {
@@ -153,13 +151,66 @@ app.post('/api/world/god-action', async (req, res) => {
   }
 });
 
+// 🧠 NOVO: ROTA DO CÉREBRO SOCIAL (SIMULAÇÃO DE LLM)
+app.post('/api/world/social-brain', async (req, res) => {
+  const { agentA, agentB, tick } = req.body;
+
+  try {
+    // Sorteio inteligente para simular a resposta da LLM
+    const actions = ['ALIANÇA', 'CONFLITO', 'COMÉRCIO', 'DIÁLOGO'];
+    const randomAction = actions[Math.floor(Math.random() * actions.length)];
+    
+    let message = '';
+    let relationChange = 0;
+    let newSociety = agentA.society;
+
+    if (randomAction === 'ALIANÇA') {
+      message = `${agentA.name} propôs uma aliança tática. ${agentB.name} aceitou!`;
+      relationChange = 20;
+      // Cria o nome da facção se ele não tiver uma
+      newSociety = agentA.society === 'Nenhuma' ? `Facção de ${agentA.name}` : agentA.society;
+    } else if (randomAction === 'CONFLITO') {
+      message = `${agentA.name} tentou roubar recursos de ${agentB.name}. Uma briga começou!`;
+      relationChange = -20;
+    } else if (randomAction === 'COMÉRCIO') {
+      message = `${agentA.name} e ${agentB.name} trocaram segredos sobre a ilha.`;
+      relationChange = 10;
+    } else {
+      message = `${agentA.name} e ${agentB.name} apenas se encararam de longe.`;
+      relationChange = 2;
+    }
+
+    // 1. Atualiza a tabela de relacionamentos
+    await db.query(
+      `INSERT INTO agent_relationships (agent_a_id, agent_b_id, relationship_score, last_interaction_tick) 
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (agent_a_id, agent_b_id) DO UPDATE SET relationship_score = agent_relationships.relationship_score + $3, last_interaction_tick = $4`,
+      [agentA.id, agentB.id, relationChange, tick]
+    );
+
+    // 2. Se formaram aliança, atualiza a sociedade de ambos no banco
+    if (randomAction === 'ALIANÇA') {
+      await db.query('UPDATE agents SET society = $1 WHERE id IN ($2, $3)', [newSociety, agentA.id, agentB.id]);
+    }
+
+    // 3. Registra o desfecho no Livro das Eras
+    await db.query(
+      "INSERT INTO world_events (tick, type, message) VALUES ($1, $2, $3)",
+      [tick, randomAction, `📜 Desfecho Social: ${message} (+${relationChange} de Relação)`]
+    );
+
+    res.json({ success: true, summary: message });
+  } catch (error) {
+    console.error('Erro no Cérebro Social:', error);
+    res.status(500).json({ error: 'Falha no diálogo' });
+  }
+});
+
 // ==========================================
-// 🚀 INICIALIZAÇÃO DO SERVIDOR (Atenção aqui!)
+// 🚀 INICIALIZAÇÃO DO SERVIDOR
 // ==========================================
 const PORT = process.env.PORT || 3333;
 
-// Tem que ser server.listen e não app.listen, pro WebSocket funcionar junto com a API!
 server.listen(PORT, () => console.log(`🔥 Servidor c/ WebSocket bombando na porta ${PORT}`));
 
-// Inicia o motor físico do jogo no background
 import './loop';

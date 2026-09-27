@@ -1,14 +1,22 @@
 /**
- * Sistema de Energia Divina + Cooldowns
+ * Energia Divina + Cooldowns + Magia Elementar
  *
- * - Energia global (0–100), regenera a cada tick do loop
- * - Cada intervenção tem custo e cooldown em ticks
- * - Bênçãos têm cooldown por agente (evita spam no mesmo cidadão)
+ * Elementos:
+ *  FOGO  — queima área (dano, destrói árvores)
+ *  AGUA  — hidrata e cura leve na área
+ *  TERRA — ergue jazida / recursos no ponto
+ *  AR    — empurra agentes e pode mudar clima
+ *  VIDA  — faz brotar árvores e cura leve
  */
 
 export type DivineActionType =
   | 'RAIO'
   | 'MILAGRE'
+  | 'ELEM_FOGO'
+  | 'ELEM_AGUA'
+  | 'ELEM_TERRA'
+  | 'ELEM_AR'
+  | 'ELEM_VIDA'
   | 'BLESS_HEAL'
   | 'BLESS_FOOD'
   | 'BLESS_WATER'
@@ -16,15 +24,26 @@ export type DivineActionType =
   | 'BLESS_FULL'
   | 'BLESS_MESSAGE';
 
+export type ElementType = 'FOGO' | 'AGUA' | 'TERRA' | 'AR' | 'VIDA';
+
 interface ActionConfig {
   cost: number;
   cooldownTicks: number;
   label: string;
+  /** Raio de efeito no mapa (unidades 0–100), se aplicável */
+  radius?: number;
 }
 
 const ACTION_CONFIG: Record<DivineActionType, ActionConfig> = {
-  RAIO: { cost: 25, cooldownTicks: 4, label: 'Raio' },
+  RAIO: { cost: 25, cooldownTicks: 4, label: 'Raio', radius: 5 },
   MILAGRE: { cost: 15, cooldownTicks: 3, label: 'Milagre (Árvore)' },
+
+  ELEM_FOGO: { cost: 22, cooldownTicks: 5, label: '🔥 Fogo', radius: 8 },
+  ELEM_AGUA: { cost: 18, cooldownTicks: 4, label: '💧 Água', radius: 10 },
+  ELEM_TERRA: { cost: 20, cooldownTicks: 5, label: '🪨 Terra', radius: 4 },
+  ELEM_AR: { cost: 16, cooldownTicks: 4, label: '💨 Ar', radius: 12 },
+  ELEM_VIDA: { cost: 20, cooldownTicks: 5, label: '🌿 Vida', radius: 7 },
+
   BLESS_HEAL: { cost: 12, cooldownTicks: 3, label: 'Cura' },
   BLESS_FOOD: { cost: 10, cooldownTicks: 2, label: 'Comida' },
   BLESS_WATER: { cost: 10, cooldownTicks: 2, label: 'Água' },
@@ -33,25 +52,59 @@ const ACTION_CONFIG: Record<DivineActionType, ActionConfig> = {
   BLESS_MESSAGE: { cost: 5, cooldownTicks: 1, label: 'Mensagem' },
 };
 
-const MAX_ENERGY = 100;
-const REGEN_PER_TICK = 4; // ~1 energia por segundo (tick = 2.5s)
+/** Multiplicador de custo conforme clima atual */
+export function weatherCostMultiplier(element: ElementType, weather: string): number {
+  const w = (weather || '').toLowerCase();
+  switch (element) {
+    case 'FOGO':
+      if (w.includes('sol') || w.includes('ensolarado')) return 0.75; // mais barato
+      if (w.includes('chuva') || w.includes('tempestade')) return 1.4; // mais caro
+      return 1;
+    case 'AGUA':
+      if (w.includes('chuva') || w.includes('tempestade')) return 0.7;
+      if (w.includes('sol') || w.includes('ensolarado')) return 1.25;
+      return 1;
+    case 'AR':
+      if (w.includes('tempestade') || w.includes('nublado')) return 0.8;
+      return 1;
+    case 'TERRA':
+      return 1;
+    case 'VIDA':
+      if (w.includes('chuva')) return 0.85;
+      if (w.includes('tempestade')) return 1.15;
+      return 1;
+    default:
+      return 1;
+  }
+}
 
-/** Estado em memória do processo (não precisa de migration no banco) */
+const MAX_ENERGY = 100;
+const REGEN_PER_TICK = 4;
+
 let energy = MAX_ENERGY;
 let currentTick = 0;
 
-/** Último tick em que cada tipo de ação global foi usada */
 const globalLastUsed: Partial<Record<DivineActionType, number>> = {};
-
-/** Último tick de bênção por agente: agentId → action → tick */
 const agentLastBlessing: Map<number, Partial<Record<DivineActionType, number>>> = new Map();
 
+/** Último feitiço elementar lançado (para feedback visual no front) */
+let lastElementalCast: {
+  element: ElementType;
+  x: number;
+  y: number;
+  radius: number;
+  tick: number;
+} | null = null;
+
 export function syncTick(tick: number) {
-  // Regenera energia a cada avanço de tick
   if (tick > currentTick) {
     const delta = tick - currentTick;
     energy = Math.min(MAX_ENERGY, energy + delta * REGEN_PER_TICK);
     currentTick = tick;
+  }
+  // Limpa efeito visual antigo
+  if (lastElementalCast && tick - lastElementalCast.tick > 3) {
+    lastElementalCast = null;
   }
 }
 
@@ -68,10 +121,17 @@ export function getDivineState() {
     energy: Math.round(energy),
     maxEnergy: MAX_ENERGY,
     regenPerTick: REGEN_PER_TICK,
-    cooldowns, // action → ticks restantes
+    cooldowns,
     costs: Object.fromEntries(
       Object.entries(ACTION_CONFIG).map(([k, v]) => [k, v.cost])
-    ) as Record<DivineActionType, number>,
+    ) as Record<string, number>,
+    radii: Object.fromEntries(
+      Object.entries(ACTION_CONFIG)
+        .filter(([, v]) => v.radius != null)
+        .map(([k, v]) => [k, v.radius])
+    ) as Record<string, number>,
+    lastCast: lastElementalCast,
+    elements: ['FOGO', 'AGUA', 'TERRA', 'AR', 'VIDA'] as ElementType[],
   };
 }
 
@@ -82,15 +142,14 @@ export interface DivineCheckResult {
   cooldownRemaining?: number;
 }
 
-/** Verifica se a ação pode ser executada (sem consumir ainda) */
 export function canPerform(
   action: DivineActionType,
-  agentId?: number
+  agentId?: number,
+  weather?: string
 ): DivineCheckResult {
   const cfg = ACTION_CONFIG[action];
   if (!cfg) return { ok: false, error: 'Ação divina desconhecida' };
 
-  // Cooldown global da ação
   const lastGlobal = globalLastUsed[action] ?? -999;
   const globalRemaining = cfg.cooldownTicks - (currentTick - lastGlobal);
   if (globalRemaining > 0) {
@@ -102,7 +161,6 @@ export function canPerform(
     };
   }
 
-  // Cooldown por agente (só bênçãos)
   if (agentId != null && action.startsWith('BLESS_')) {
     const agentMap = agentLastBlessing.get(agentId) || {};
     const lastAgent = agentMap[action] ?? -999;
@@ -117,22 +175,31 @@ export function canPerform(
     }
   }
 
-  // Energia
-  if (energy < cfg.cost) {
+  let cost = cfg.cost;
+  if (action.startsWith('ELEM_') && weather) {
+    const el = action.replace('ELEM_', '') as ElementType;
+    cost = Math.round(cost * weatherCostMultiplier(el, weather));
+  }
+
+  if (energy < cost) {
     return {
       ok: false,
-      error: `Energia divina insuficiente (precisa ${cfg.cost}, tem ${Math.round(energy)})`,
-      cost: cfg.cost,
+      error: `Energia divina insuficiente (precisa ${cost}, tem ${Math.round(energy)})`,
+      cost,
     };
   }
 
-  return { ok: true, cost: cfg.cost };
+  return { ok: true, cost };
 }
 
-/** Consome energia e registra cooldowns. Chamar só após canPerform ok. */
-export function consume(action: DivineActionType, agentId?: number): void {
+export function consume(
+  action: DivineActionType,
+  agentId?: number,
+  actualCost?: number
+): void {
   const cfg = ACTION_CONFIG[action];
-  energy = Math.max(0, energy - cfg.cost);
+  const cost = actualCost ?? cfg.cost;
+  energy = Math.max(0, energy - cost);
   globalLastUsed[action] = currentTick;
 
   if (agentId != null && action.startsWith('BLESS_')) {
@@ -142,19 +209,27 @@ export function consume(action: DivineActionType, agentId?: number): void {
   }
 }
 
-/** Reseta energia e cooldowns (usado no reset do mundo) */
+export function recordElementalCast(
+  element: ElementType,
+  x: number,
+  y: number
+): void {
+  const action = `ELEM_${element}` as DivineActionType;
+  const radius = ACTION_CONFIG[action]?.radius ?? 8;
+  lastElementalCast = { element, x, y, radius, tick: currentTick };
+}
+
 export function resetDivinePower(): void {
   energy = MAX_ENERGY;
   currentTick = 0;
+  lastElementalCast = null;
   for (const key of Object.keys(globalLastUsed) as DivineActionType[]) {
     delete globalLastUsed[key];
   }
   agentLastBlessing.clear();
 }
 
-export function mapBlessingToAction(
-  blessing?: string
-): DivineActionType {
+export function mapBlessingToAction(blessing?: string): DivineActionType {
   switch (blessing) {
     case 'heal':
       return 'BLESS_HEAL';
@@ -169,4 +244,19 @@ export function mapBlessingToAction(
     default:
       return 'BLESS_MESSAGE';
   }
+}
+
+export function mapElementToAction(element: string): DivineActionType | null {
+  const map: Record<string, DivineActionType> = {
+    FOGO: 'ELEM_FOGO',
+    AGUA: 'ELEM_AGUA',
+    TERRA: 'ELEM_TERRA',
+    AR: 'ELEM_AR',
+    VIDA: 'ELEM_VIDA',
+  };
+  return map[element.toUpperCase()] ?? null;
+}
+
+export function getActionRadius(action: DivineActionType): number {
+  return ACTION_CONFIG[action]?.radius ?? 5;
 }

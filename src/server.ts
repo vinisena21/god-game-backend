@@ -9,10 +9,14 @@ import {
   canPerform,
   consume,
   getDivineState,
+  getActionRadius,
   mapBlessingToAction,
+  mapElementToAction,
+  recordElementalCast,
   resetDivinePower,
   syncTick,
   type DivineActionType,
+  type ElementType,
 } from './divine';
 
 dotenv.config();
@@ -33,7 +37,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Broadcast do estado a ~4 FPS (inclui poder divino)
 setInterval(async () => {
   try {
     const [worldRes, agentsRes, structRes, entRes, eventsRes] = await Promise.all([
@@ -58,7 +61,7 @@ setInterval(async () => {
       divine: getDivineState(),
     });
   } catch {
-    // Ignora conflitos transitórios de leitura
+    // ignore
   }
 }, 250);
 
@@ -93,7 +96,6 @@ app.get('/api/world/prayers', async (_req, res) => {
   }
 });
 
-/** Estado atual da energia/cooldowns divinos */
 app.get('/api/world/divine', (_req, res) => {
   res.json(getDivineState());
 });
@@ -173,9 +175,7 @@ app.post('/api/world/reset', async (_req, res) => {
     `);
 
     await db.query("INSERT INTO world_events (tick, type, message) VALUES (0, 'BIG BANG', 'Uma nova civilização se inicia.')");
-
     resetDivinePower();
-
     res.json({ message: 'Mundo resetado!' });
   } catch (error) {
     console.error('Erro no reset:', error);
@@ -183,10 +183,6 @@ app.post('/api/world/reset', async (_req, res) => {
   }
 });
 
-/**
- * Resposta divina a um agente
- * Body: { message?: string, blessing?: 'heal' | 'food' | 'water' | 'resources' | 'full' }
- */
 app.post('/api/agents/:id/miracle', async (req, res) => {
   const agentId = Number(req.params.id);
   const { message, blessing } = req.body as {
@@ -216,12 +212,9 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
 
     const agentRes = await db.query('SELECT * FROM agents WHERE id = $1', [agentId]);
     const agent = agentRes.rows[0];
-    if (!agent) {
-      return res.status(404).json({ error: 'Agente não encontrado' });
-    }
+    if (!agent) return res.status(404).json({ error: 'Agente não encontrado' });
 
-    // Consome poder divino
-    consume(action, agentId);
+    consume(action, agentId, check.cost);
 
     let effectDesc = '';
     if (blessing === 'heal' || blessing === 'full') {
@@ -276,15 +269,184 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
   }
 });
 
-// Ação divina no mapa (Raio / Milagre de árvore)
+/** Aplica efeito elementar em (x,y) */
+async function applyElementalEffect(
+  element: ElementType,
+  x: number,
+  y: number,
+  radius: number,
+  tick: number
+): Promise<string> {
+  const distSql = 'sqrt(power(x - $1, 2) + power(y - $2, 2))';
+
+  switch (element) {
+    case 'FOGO': {
+      // Dano em agentes, destrói árvores e casas na área
+      await db.query(
+        `UPDATE agents SET hp = GREATEST(0, hp - 35), current_action = 'Queimando!' WHERE ${distSql} < $3 AND hp > 0`,
+        [x, y, radius]
+      );
+      await db.query(
+        `DELETE FROM world_entities WHERE type = 'Árvore Anciã' AND ${distSql} < $3`,
+        [x, y, radius]
+      );
+      await db.query(`DELETE FROM world_structures WHERE ${distSql} < $3`, [x, y, radius]);
+      await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'ELEMENTAL', $2)", [
+        tick,
+        `🔥 O Criador invocou FOGO em [${x}, ${y}] — a área ardeu!`,
+      ]);
+      return 'Área queimada';
+    }
+
+    case 'AGUA': {
+      // Restaura água e cura leve; empurra levemente fome
+      await db.query(
+        `UPDATE agents SET water = LEAST(100, water + 30), hp = LEAST(100, hp + 10),
+         current_action = 'Banado pela água divina' WHERE ${distSql} < $3 AND hp > 0`,
+        [x, y, radius]
+      );
+      // Chance de mudar clima para chuva se estiver seco
+      const wRes = await db.query('SELECT weather FROM world_state WHERE id = 1');
+      const weather = wRes.rows[0]?.weather || '';
+      if (!weather.toLowerCase().includes('chuva') && Math.random() < 0.4) {
+        await db.query("UPDATE world_state SET weather = 'Chuva leve' WHERE id = 1");
+        await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'CLIMA', $2)", [
+          tick,
+          '🌧️ A magia de Água trouxe chuva leve.',
+        ]);
+      }
+      await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'ELEMENTAL', $2)", [
+        tick,
+        `💧 O Criador invocou ÁGUA em [${x}, ${y}] — a sede foi saciada.`,
+      ]);
+      return 'Área hidratada';
+    }
+
+    case 'TERRA': {
+      // Cria jazida de ouro no ponto
+      await db.query(
+        "INSERT INTO world_entities (type, x, y, hp, resource_amount) VALUES ('Jazida de Ouro', $1, $2, 200, 80)",
+        [x, y]
+      );
+      // Pequeno bônus de madeira para quem estiver perto
+      await db.query(
+        `UPDATE agents SET wood = wood + 8, current_action = 'Sente a terra tremer' WHERE ${distSql} < $3 AND hp > 0`,
+        [x, y, radius]
+      );
+      await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'ELEMENTAL', $2)", [
+        tick,
+        `🪨 O Criador invocou TERRA em [${x}, ${y}] — uma jazida surgiu!`,
+      ]);
+      return 'Jazida erguida';
+    }
+
+    case 'AR': {
+      // Empurra agentes para longe do centro + pode gerar tempestade
+      const agentsRes = await db.query(
+        `SELECT id, x, y FROM agents WHERE ${distSql} < $3 AND hp > 0`,
+        [x, y, radius]
+      );
+      for (const a of agentsRes.rows) {
+        const dx = a.x - x;
+        const dy = a.y - y;
+        const d = Math.sqrt(dx * dx + dy * dy) || 1;
+        const nx = Math.max(8, Math.min(92, Math.round(a.x + (dx / d) * 10)));
+        const ny = Math.max(8, Math.min(92, Math.round(a.y + (dy / d) * 10)));
+        await db.query(
+          "UPDATE agents SET x = $1, y = $2, current_action = 'Arrastado pelo vento!' WHERE id = $3",
+          [nx, ny, a.id]
+        );
+      }
+      if (Math.random() < 0.35) {
+        await db.query("UPDATE world_state SET weather = 'Tempestade' WHERE id = 1");
+        await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'CLIMA', $2)", [
+          tick,
+          '🌪️ A magia de Ar desencadeou uma Tempestade!',
+        ]);
+      }
+      await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'ELEMENTAL', $2)", [
+        tick,
+        `💨 O Criador invocou AR em [${x}, ${y}] — ventos violentos varrem a região.`,
+      ]);
+      return 'Ventania lançada';
+    }
+
+    case 'VIDA': {
+      // Brota árvores + cura área
+      for (let i = 0; i < 3; i++) {
+        const ox = Math.max(5, Math.min(95, x + Math.floor(Math.random() * 7) - 3));
+        const oy = Math.max(5, Math.min(95, y + Math.floor(Math.random() * 7) - 3));
+        await db.query(
+          "INSERT INTO world_entities (type, x, y, hp, resource_amount) VALUES ('Árvore Anciã', $1, $2, 100, 50)",
+          [ox, oy]
+        );
+      }
+      await db.query(
+        `UPDATE agents SET hp = LEAST(100, hp + 20), food = LEAST(100, food + 10),
+         current_action = 'Revitalizado pela natureza' WHERE ${distSql} < $3 AND hp > 0`,
+        [x, y, radius]
+      );
+      await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'ELEMENTAL', $2)", [
+        tick,
+        `🌿 O Criador invocou VIDA em [${x}, ${y}] — a floresta floresceu.`,
+      ]);
+      return 'Floresta despertada';
+    }
+
+    default:
+      return 'Sem efeito';
+  }
+}
+
+// Ação divina clássica (Raio / Milagre) OU elementar via action=ELEM_FOGO etc.
 app.post('/api/world/god-action', async (req, res) => {
-  const { action, x, y } = req.body as { action: string; x: number; y: number };
+  const { action, x, y, element } = req.body as {
+    action?: string;
+    element?: string;
+    x: number;
+    y: number;
+  };
 
   try {
-    const tickRes = await db.query('SELECT current_tick FROM world_state WHERE id = 1');
-    const tick = tickRes.rows[0].current_tick;
+    const worldRes = await db.query('SELECT current_tick, weather FROM world_state WHERE id = 1');
+    const tick = worldRes.rows[0].current_tick;
+    const weather = worldRes.rows[0].weather || 'Ensolarado';
     syncTick(tick);
 
+    // Magia elementar
+    if (element || (action && action.startsWith('ELEM_'))) {
+      const el = (element || action!.replace('ELEM_', '')).toUpperCase() as ElementType;
+      const divineAction = mapElementToAction(el);
+      if (!divineAction) {
+        return res.status(400).json({ error: 'Elemento inválido. Use FOGO, AGUA, TERRA, AR ou VIDA.' });
+      }
+
+      const check = canPerform(divineAction, undefined, weather);
+      if (!check.ok) {
+        return res.status(429).json({
+          error: check.error,
+          cooldownRemaining: check.cooldownRemaining,
+          cost: check.cost,
+          divine: getDivineState(),
+        });
+      }
+
+      consume(divineAction, undefined, check.cost);
+      const radius = getActionRadius(divineAction);
+      const summary = await applyElementalEffect(el, x, y, radius, tick);
+      recordElementalCast(el, x, y);
+
+      return res.json({
+        success: true,
+        element: el,
+        summary,
+        cost: check.cost,
+        radius,
+        divine: getDivineState(),
+      });
+    }
+
+    // Ações clássicas
     const divineAction: DivineActionType | null =
       action === 'RAIO' ? 'RAIO' : action === 'MILAGRE' ? 'MILAGRE' : null;
 
@@ -302,17 +464,17 @@ app.post('/api/world/god-action', async (req, res) => {
       });
     }
 
-    consume(divineAction);
+    consume(divineAction, undefined, check.cost);
 
     if (divineAction === 'RAIO') {
-      await db.query('UPDATE agents SET hp = 0 WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5', [
-        x,
-        y,
-      ]);
-      await db.query('DELETE FROM world_structures WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5', [
-        x,
-        y,
-      ]);
+      await db.query(
+        'UPDATE agents SET hp = 0 WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5',
+        [x, y]
+      );
+      await db.query(
+        'DELETE FROM world_structures WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5',
+        [x, y]
+      );
       await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'PUNIÇÃO', $2)", [
         tick,
         `⚡ A Mão de Deus disparou um RAIO nas coordenadas [${x}, ${y}]!`,
@@ -335,7 +497,6 @@ app.post('/api/world/god-action', async (req, res) => {
   }
 });
 
-// Cérebro social
 app.post('/api/world/social-brain', async (req, res) => {
   const { agentA, agentB, tick } = req.body;
 
@@ -383,7 +544,6 @@ app.post('/api/world/social-brain', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3333;
-
 server.listen(PORT, () => console.log(`🔥 Servidor + WebSocket na porta ${PORT}`));
 
 import './loop';

@@ -5,6 +5,15 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { db } from './db';
 import { getSocialOutcome } from './ai';
+import {
+  canPerform,
+  consume,
+  getDivineState,
+  mapBlessingToAction,
+  resetDivinePower,
+  syncTick,
+  type DivineActionType,
+} from './divine';
 
 dotenv.config();
 
@@ -24,7 +33,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Broadcast do estado a ~4 FPS
+// Broadcast do estado a ~4 FPS (inclui poder divino)
 setInterval(async () => {
   try {
     const [worldRes, agentsRes, structRes, entRes, eventsRes] = await Promise.all([
@@ -37,12 +46,16 @@ setInterval(async () => {
       db.query('SELECT * FROM world_events ORDER BY id DESC LIMIT 50'),
     ]);
 
+    const world = worldRes.rows[0] || { current_tick: 0, weather: 'Desconhecido' };
+    if (world.current_tick != null) syncTick(world.current_tick);
+
     io.emit('gameState', {
-      world: worldRes.rows[0] || { current_tick: 0, weather: 'Desconhecido' },
+      world,
       agents: agentsRes.rows,
       structures: structRes.rows,
       entities: entRes.rows,
       events: eventsRes.rows,
+      divine: getDivineState(),
     });
   } catch {
     // Ignora conflitos transitórios de leitura
@@ -69,7 +82,6 @@ app.get('/api/world/events', async (_req, res) => {
   }
 });
 
-/** Lista orações recentes (últimas 30 do tipo ORAÇÃO) */
 app.get('/api/world/prayers', async (_req, res) => {
   try {
     const prayersRes = await db.query(
@@ -79,6 +91,11 @@ app.get('/api/world/prayers', async (_req, res) => {
   } catch {
     res.status(500).json({ error: 'Erro ao buscar orações' });
   }
+});
+
+/** Estado atual da energia/cooldowns divinos */
+app.get('/api/world/divine', (_req, res) => {
+  res.json(getDivineState());
 });
 
 app.get('/api/world/structures', async (_req, res) => {
@@ -156,6 +173,9 @@ app.post('/api/world/reset', async (_req, res) => {
     `);
 
     await db.query("INSERT INTO world_events (tick, type, message) VALUES (0, 'BIG BANG', 'Uma nova civilização se inicia.')");
+
+    resetDivinePower();
+
     res.json({ message: 'Mundo resetado!' });
   } catch (error) {
     console.error('Erro no reset:', error);
@@ -164,11 +184,8 @@ app.post('/api/world/reset', async (_req, res) => {
 });
 
 /**
- * Resposta divina a um agente (oração / milagre direcionado)
- * Body: {
- *   message?: string,          // voz divina (texto)
- *   blessing?: 'heal' | 'food' | 'water' | 'resources' | 'full'  // efeito concreto
- * }
+ * Resposta divina a um agente
+ * Body: { message?: string, blessing?: 'heal' | 'food' | 'water' | 'resources' | 'full' }
  */
 app.post('/api/agents/:id/miracle', async (req, res) => {
   const agentId = Number(req.params.id);
@@ -182,16 +199,30 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
   }
 
   try {
+    const tickRes = await db.query('SELECT current_tick FROM world_state WHERE id = 1');
+    const tick = tickRes.rows[0].current_tick;
+    syncTick(tick);
+
+    const action = mapBlessingToAction(blessing);
+    const check = canPerform(action, agentId);
+    if (!check.ok) {
+      return res.status(429).json({
+        error: check.error,
+        cooldownRemaining: check.cooldownRemaining,
+        cost: check.cost,
+        divine: getDivineState(),
+      });
+    }
+
     const agentRes = await db.query('SELECT * FROM agents WHERE id = $1', [agentId]);
     const agent = agentRes.rows[0];
     if (!agent) {
       return res.status(404).json({ error: 'Agente não encontrado' });
     }
 
-    const worldRes = await db.query('SELECT current_tick FROM world_state WHERE id = 1');
-    const tick = worldRes.rows[0].current_tick;
+    // Consome poder divino
+    consume(action, agentId);
 
-    // Efeitos concretos da bênção
     let effectDesc = '';
     if (blessing === 'heal' || blessing === 'full') {
       await db.query('UPDATE agents SET hp = LEAST(100, hp + 40) WHERE id = $1', [agentId]);
@@ -206,10 +237,7 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
       effectDesc += '💧 +40 água ';
     }
     if (blessing === 'resources' || blessing === 'full') {
-      await db.query(
-        'UPDATE agents SET wood = wood + 20, iron = iron + 10 WHERE id = $1',
-        [agentId]
-      );
+      await db.query('UPDATE agents SET wood = wood + 20, iron = iron + 10 WHERE id = $1', [agentId]);
       effectDesc += '🪵 +20 madeira ⛏️ +10 ferro ';
     }
 
@@ -219,29 +247,28 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
         ? `Receba minha bênção, ${agent.name}.`
         : `Eu ouvi sua oração, ${agent.name}.`);
 
-    // Memória do agente
     await db.query(
       'INSERT INTO agent_memories (agent_id, content, tick_created) VALUES ($1, $2, $3)',
       [agentId, `VOZ DIVINA: ${divineMessage}${effectDesc ? ` [${effectDesc.trim()}]` : ''}`, tick]
     );
 
-    // Evento no Livro das Eras
     await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'RESPOSTA_DIVINA', $2)", [
       tick,
       `✨ O Criador respondeu a ${agent.name}: "${divineMessage}"${effectDesc ? ` — ${effectDesc.trim()}` : ''}`,
     ]);
 
-    // Atualiza a ação atual do agente para refletir a graça
-    await db.query(
-      "UPDATE agents SET current_action = $1 WHERE id = $2",
-      [`Sentindo a graça divina...`, agentId]
-    );
+    await db.query("UPDATE agents SET current_action = $1 WHERE id = $2", [
+      'Sentindo a graça divina...',
+      agentId,
+    ]);
 
     res.json({
       success: true,
       message: 'Resposta divina enviada!',
       agent: agent.name,
       effects: effectDesc.trim() || null,
+      cost: check.cost,
+      divine: getDivineState(),
     });
   } catch (error) {
     console.error('Erro na resposta divina:', error);
@@ -251,29 +278,57 @@ app.post('/api/agents/:id/miracle', async (req, res) => {
 
 // Ação divina no mapa (Raio / Milagre de árvore)
 app.post('/api/world/god-action', async (req, res) => {
-  const { action, x, y } = req.body;
+  const { action, x, y } = req.body as { action: string; x: number; y: number };
+
   try {
     const tickRes = await db.query('SELECT current_tick FROM world_state WHERE id = 1');
     const tick = tickRes.rows[0].current_tick;
+    syncTick(tick);
 
-    if (action === 'RAIO') {
-      await db.query('UPDATE agents SET hp = 0 WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5', [x, y]);
-      await db.query('DELETE FROM world_structures WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5', [x, y]);
+    const divineAction: DivineActionType | null =
+      action === 'RAIO' ? 'RAIO' : action === 'MILAGRE' ? 'MILAGRE' : null;
+
+    if (!divineAction) {
+      return res.status(400).json({ error: 'Ação inválida' });
+    }
+
+    const check = canPerform(divineAction);
+    if (!check.ok) {
+      return res.status(429).json({
+        error: check.error,
+        cooldownRemaining: check.cooldownRemaining,
+        cost: check.cost,
+        divine: getDivineState(),
+      });
+    }
+
+    consume(divineAction);
+
+    if (divineAction === 'RAIO') {
+      await db.query('UPDATE agents SET hp = 0 WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5', [
+        x,
+        y,
+      ]);
+      await db.query('DELETE FROM world_structures WHERE sqrt(power(x - $1, 2) + power(y - $2, 2)) < 5', [
+        x,
+        y,
+      ]);
       await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'PUNIÇÃO', $2)", [
         tick,
         `⚡ A Mão de Deus disparou um RAIO nas coordenadas [${x}, ${y}]!`,
       ]);
-    } else if (action === 'MILAGRE') {
-      await db.query("INSERT INTO world_entities (type, x, y, resource_amount) VALUES ('Árvore Anciã', $1, $2, 50)", [
-        x,
-        y,
-      ]);
+    } else {
+      await db.query(
+        "INSERT INTO world_entities (type, x, y, resource_amount) VALUES ('Árvore Anciã', $1, $2, 50)",
+        [x, y]
+      );
       await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'MILAGRE', $2)", [
         tick,
         `✨ Um milagre divino fez brotar uma Árvore em [${x}, ${y}]!`,
       ]);
     }
-    res.json({ success: true });
+
+    res.json({ success: true, cost: check.cost, divine: getDivineState() });
   } catch (error) {
     console.error('Erro na intervenção divina:', error);
     res.status(500).json({ error: 'Falha divina' });

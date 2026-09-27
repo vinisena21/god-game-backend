@@ -1,5 +1,6 @@
 import { db } from './db';
 import { getAgentDecision } from './ai';
+import { tickFauna, isPrey, foodFromPrey } from './fauna';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -15,7 +16,7 @@ const DESPERATE_PRAYERS = [
 ];
 
 async function gameLoop() {
-  console.log('🚀 Motor físico iniciado (clima + social + IA + orações)...\n');
+  console.log('🚀 Motor físico 3D (clima + fauna expandida + social + IA)...\n');
 
   while (true) {
     try {
@@ -27,7 +28,6 @@ async function gameLoop() {
         continue;
       }
 
-      // Clima dinâmico a cada ~20 ticks
       if (world.current_tick % 20 === 0) {
         const newWeather = WEATHERS[Math.floor(Math.random() * WEATHERS.length)];
         if (newWeather !== world.weather) {
@@ -48,37 +48,25 @@ async function gameLoop() {
       const entRes = await db.query('SELECT * FROM world_entities WHERE hp > 0');
       let entities = entRes.rows;
 
-      // ===================== MOTOR SOCIAL =====================
+      // Social
       const SOCIO_RADIUS = 2.5;
-
       for (let i = 0; i < agents.length; i++) {
         for (let j = i + 1; j < agents.length; j++) {
           const agentA = agents[i];
           const agentB = agents[j];
-
           if (agentA.hp <= 0 || agentB.hp <= 0) continue;
-
-          const dX = agentA.x - agentB.x;
-          const dY = agentA.y - agentB.y;
-          const dist = Math.sqrt(dX * dX + dY * dY);
-
+          const dist = Math.sqrt((agentA.x - agentB.x) ** 2 + (agentA.y - agentB.y) ** 2);
           if (dist < SOCIO_RADIUS) {
-            const jaConversaramRes = await db.query(
-              `SELECT * FROM agent_relationships
-               WHERE (agent_a_id = $1 AND agent_b_id = $2) OR (agent_a_id = $2 AND agent_b_id = $1)
-               LIMIT 1`,
+            const rel = await db.query(
+              `SELECT * FROM agent_relationships WHERE (agent_a_id = $1 AND agent_b_id = $2) OR (agent_a_id = $2 AND agent_b_id = $1) LIMIT 1`,
               [agentA.id, agentB.id]
             );
-
-            const lastTick = jaConversaramRes.rows[0]?.last_interaction_tick ?? -999;
+            const lastTick = rel.rows[0]?.last_interaction_tick ?? -999;
             if (world.current_tick - lastTick > 12) {
-              console.log(`🧠 Encontro: ${agentA.name} × ${agentB.name}`);
-
               await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'DIÁLOGO', $2)", [
                 world.current_tick,
-                `💬 ${agentA.name} e ${agentB.name} se encontraram cara a cara.`,
+                `💬 ${agentA.name} e ${agentB.name} se encontraram.`,
               ]);
-
               try {
                 const PORT = process.env.PORT || 3333;
                 await fetch(`http://localhost:${PORT}/api/world/social-brain`, {
@@ -86,71 +74,17 @@ async function gameLoop() {
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ agentA, agentB, tick: world.current_tick }),
                 });
-              } catch (err) {
-                console.error('Falha ao chamar cérebro social:', err);
+              } catch {
+                /* ignore */
               }
             }
           }
         }
       }
 
-      // ===================== FAUNA =====================
-      for (const ent of entities) {
-        if (ent.type === 'Cervo' || ent.type === 'Lobo') {
-          let nx = ent.x;
-          let ny = ent.y;
+      // Fauna expandida
+      entities = await tickFauna(entities, world.current_tick);
 
-          if (ent.type === 'Lobo') {
-            const prey = entities.find(
-              (e) =>
-                e.type === 'Cervo' &&
-                Math.sqrt((e.x - ent.x) ** 2 + (e.y - ent.y) ** 2) < 15
-            );
-            if (prey) {
-              const dx = prey.x - ent.x;
-              const dy = prey.y - ent.y;
-              const d = Math.sqrt(dx * dx + dy * dy) || 1;
-              nx = Math.round(ent.x + (dx / d) * 3);
-              ny = Math.round(ent.y + (dy / d) * 3);
-
-              if (d < 3) {
-                await db.query('UPDATE world_entities SET hp = GREATEST(0, hp - 20) WHERE id = $1', [prey.id]);
-                if (prey.hp - 20 <= 0) {
-                  await db.query('DELETE FROM world_entities WHERE id = $1', [prey.id]);
-                  entities = entities.filter((e) => e.id !== prey.id);
-                  await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'CAÇA', $2)", [
-                    world.current_tick,
-                    `🐺 Um lobo abateu um cervo.`,
-                  ]);
-                }
-              }
-            } else {
-              nx = Math.max(5, Math.min(95, ent.x + (Math.floor(Math.random() * 5) - 2)));
-              ny = Math.max(5, Math.min(95, ent.y + (Math.floor(Math.random() * 5) - 2)));
-            }
-          } else {
-            const predator = entities.find(
-              (e) =>
-                e.type === 'Lobo' &&
-                Math.sqrt((e.x - ent.x) ** 2 + (e.y - ent.y) ** 2) < 12
-            );
-            if (predator) {
-              const dx = ent.x - predator.x;
-              const dy = ent.y - predator.y;
-              const d = Math.sqrt(dx * dx + dy * dy) || 1;
-              nx = Math.max(5, Math.min(95, Math.round(ent.x + (dx / d) * 4)));
-              ny = Math.max(5, Math.min(95, Math.round(ent.y + (dy / d) * 4)));
-            } else {
-              nx = Math.max(5, Math.min(95, ent.x + (Math.floor(Math.random() * 5) - 2)));
-              ny = Math.max(5, Math.min(95, ent.y + (Math.floor(Math.random() * 5) - 2)));
-            }
-          }
-
-          await db.query('UPDATE world_entities SET x = $1, y = $2 WHERE id = $3', [nx, ny, ent.id]);
-        }
-      }
-
-      // ===================== AÇÕES DOS AGENTES =====================
       const useAI = world.current_tick % 8 === 0 && agents.length > 0;
 
       for (const agent of agents) {
@@ -161,13 +95,12 @@ async function gameLoop() {
         let newHp = agent.hp;
         let newWood = agent.wood || 0;
         let newIron = agent.iron || 0;
-        let logAcao = agent.current_action || 'Explorando a região...';
+        let logAcao = agent.current_action || 'Explorando...';
 
         if (world.weather?.includes('Chuva') || world.weather?.includes('Tempestade')) {
           newWater = Math.min(100, newWater + 2);
         }
 
-        // Repulsão
         for (const other of agents) {
           if (other.id !== agent.id) {
             const dX = newX - other.x;
@@ -180,17 +113,14 @@ async function gameLoop() {
           }
         }
 
-        // Busca de recursos
         let targetEntity: any = null;
         let minDist = Infinity;
 
         if (newFood < 25) {
           logAcao = 'Caçando com urgência...';
           for (const ent of entities) {
-            if (ent.type === 'Cervo') {
-              const dx = ent.x - newX;
-              const dy = ent.y - newY;
-              const dist = Math.sqrt(dx * dx + dy * dy);
+            if (isPrey(ent.type)) {
+              const dist = Math.sqrt((ent.x - newX) ** 2 + (ent.y - newY) ** 2);
               if (dist < minDist) {
                 minDist = dist;
                 targetEntity = ent;
@@ -201,9 +131,7 @@ async function gameLoop() {
 
         if (!targetEntity) {
           for (const ent of entities) {
-            const dx = ent.x - newX;
-            const dy = ent.y - newY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
+            const dist = Math.sqrt((ent.x - newX) ** 2 + (ent.y - newY) ** 2);
             if (dist < minDist) {
               minDist = dist;
               targetEntity = ent;
@@ -215,7 +143,6 @@ async function gameLoop() {
           const dx = targetEntity.x - newX;
           const dy = targetEntity.y - newY;
           const dist = Math.sqrt(dx * dx + dy * dy);
-
           if (dist > 3) {
             newX += Math.round((dx / dist) * Math.min(4, dist));
             newY += Math.round((dy / dist) * Math.min(4, dist));
@@ -229,17 +156,16 @@ async function gameLoop() {
               logAcao = 'Minerou ouro.';
               await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'MINERAÇÃO', $2)", [
                 world.current_tick,
-                `⛏️ ${agent.name} minerou uma Jazida de Ouro!`,
+                `⛏️ ${agent.name} minerou ouro!`,
               ]);
-            } else if (targetEntity.type === 'Cervo') {
-              newFood += targetEntity.resource_amount || 40;
-              logAcao = 'Caçou com sucesso!';
+            } else if (isPrey(targetEntity.type)) {
+              newFood += foodFromPrey(targetEntity.type);
+              logAcao = `Caçou um ${targetEntity.type}!`;
               await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'CAÇA', $2)", [
                 world.current_tick,
-                `🦌 ${agent.name} caçou um cervo.`,
+                `🍖 ${agent.name} caçou um ${targetEntity.type.toLowerCase()}.`,
               ]);
             }
-
             await db.query('DELETE FROM world_entities WHERE id = $1', [targetEntity.id]);
             entities = entities.filter((e) => e.id !== targetEntity.id);
           }
@@ -248,13 +174,9 @@ async function gameLoop() {
           newY += Math.floor(Math.random() * 9) - 4;
         }
 
-        // Construção
         if (newWood >= 40) {
-          const hasHouseNear = structures.some(
-            (s) => Math.sqrt((s.x - newX) ** 2 + (s.y - newY) ** 2) < 10
-          );
+          const hasHouseNear = structures.some((s) => Math.sqrt((s.x - newX) ** 2 + (s.y - newY) ** 2) < 10);
           const isOnRiver = newX > 40 && newX < 60;
-
           if (!hasHouseNear && !isOnRiver) {
             await db.query(
               'INSERT INTO world_structures (agent_name, type, x, y, hp) VALUES ($1, $2, $3, $4, 150)',
@@ -263,19 +185,16 @@ async function gameLoop() {
             newWood -= 40;
             logAcao = 'Construiu uma Casa!';
             structures.push({ type: 'Casa', x: newX, y: newY, agent_name: agent.name });
-
             await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'CONSTRUÇÃO', $2)", [
               world.current_tick,
-              `🏘️ ${agent.name} ergueu uma nova casa.`,
+              `🏘️ ${agent.name} ergueu uma casa.`,
             ]);
           } else {
-            logAcao = 'Procurando terreno para construir...';
+            logAcao = 'Procurando terreno...';
             newX += newX > 50 ? 8 : -8;
-            newY += Math.floor(Math.random() * 15) - 7;
           }
         }
 
-        // Reprodução
         if (
           agent.hp > 70 &&
           newFood > 40 &&
@@ -291,66 +210,44 @@ async function gameLoop() {
             if (exists.rows.length === 0) {
               await db.query(
                 `INSERT INTO agents (name, hp, water, food, wood, iron, x, y, society, current_action)
-                 VALUES ($1, 80, 40, 40, 0, 0, $2, $3, $4, 'Nascendo no mundo')`,
+                 VALUES ($1, 80, 40, 40, 0, 0, $2, $3, $4, 'Nascendo')`,
                 [babyName, newX + 2, newY + 2, agent.society]
               );
               await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'NASCIMENTO', $2)", [
                 world.current_tick,
-                `👶 ${babyName} nasceu na ${agent.society}!`,
+                `👶 ${babyName} nasceu!`,
               ]);
               newFood -= 15;
             }
           }
         }
 
-        // ========== ORAÇÕES DE DESESPERO ==========
-        // Agentes em perigo oram com frequência maior (sem depender da IA)
         const isDesperate = agent.hp < 35 || newFood < 10 || newWater < 10;
         if (isDesperate && Math.random() < 0.22) {
-          // Evita spam: só ora se não orou nos últimos 8 ticks
           const recentPrayer = await db.query(
-            `SELECT id FROM world_events
-             WHERE type = 'ORAÇÃO' AND message LIKE $1 AND tick > $2
-             LIMIT 1`,
+            `SELECT id FROM world_events WHERE type = 'ORAÇÃO' AND message LIKE $1 AND tick > $2 LIMIT 1`,
             [`%${agent.name}%`, world.current_tick - 8]
           );
-
           if (recentPrayer.rows.length === 0) {
-            const prayer =
-              DESPERATE_PRAYERS[Math.floor(Math.random() * DESPERATE_PRAYERS.length)];
+            const prayer = DESPERATE_PRAYERS[Math.floor(Math.random() * DESPERATE_PRAYERS.length)];
             await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'ORAÇÃO', $2)", [
               world.current_tick,
               `🙏 ${agent.name}: "${prayer}"`,
             ]);
-            await db.query(
-              'INSERT INTO agent_memories (agent_id, content, tick_created) VALUES ($1, $2, $3)',
-              [agent.id, `Orei ao Criador: ${prayer}`, world.current_tick]
-            );
             logAcao = 'Ajoelhado em oração...';
           }
         }
 
-        // Decisão de IA ocasional
         if (useAI && Math.random() < 0.35) {
           try {
-            const recentEvents = await db.query(
-              'SELECT message FROM world_events ORDER BY id DESC LIMIT 6'
-            );
-            const eventsText = recentEvents.rows.map((r: any) => r.message).join('\n');
+            const recentEvents = await db.query('SELECT message FROM world_events ORDER BY id DESC LIMIT 6');
             const decision = await getAgentDecision(
               agent.name,
-              agent.personality || 'Sobrevivente pragmático',
+              agent.personality || 'Sobrevivente',
               world.weather,
-              eventsText
+              recentEvents.rows.map((r: any) => r.message).join('\n')
             );
             if (decision.acao) logAcao = decision.acao;
-
-            if (decision.memoria) {
-              await db.query(
-                'INSERT INTO agent_memories (agent_id, content, tick_created) VALUES ($1, $2, $3)',
-                [agent.id, decision.memoria, world.current_tick]
-              );
-            }
             if (decision.oracao) {
               await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'ORAÇÃO', $2)", [
                 world.current_tick,
@@ -358,20 +255,13 @@ async function gameLoop() {
               ]);
             }
           } catch {
-            // silencioso
+            /* ignore */
           }
         }
 
-        // HP
-        if (newFood <= 0 || newWater <= 0) {
-          newHp = Math.max(0, agent.hp - 10);
-        } else {
-          newHp = Math.min(100, agent.hp + 4);
-        }
-
-        if (world.weather === 'Tempestade' && Math.random() < 0.15) {
-          newHp = Math.max(0, newHp - 5);
-        }
+        if (newFood <= 0 || newWater <= 0) newHp = Math.max(0, agent.hp - 10);
+        else newHp = Math.min(100, agent.hp + 4);
+        if (world.weather === 'Tempestade' && Math.random() < 0.15) newHp = Math.max(0, newHp - 5);
 
         newX = Math.max(8, Math.min(92, newX));
         newY = Math.max(8, Math.min(92, newY));
@@ -379,7 +269,7 @@ async function gameLoop() {
         if (newHp <= 0 && agent.hp > 0) {
           await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'MORTE', $2)", [
             world.current_tick,
-            `💀 ${agent.name} não resistiu e faleceu.`,
+            `💀 ${agent.name} faleceu.`,
           ]);
         }
 
@@ -391,7 +281,6 @@ async function gameLoop() {
     } catch (error) {
       console.error('❌ Erro no loop:', error);
     }
-
     await sleep(2500);
   }
 }

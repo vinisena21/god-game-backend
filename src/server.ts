@@ -34,6 +34,9 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => console.log('Cliente desconectado:', socket.id));
 });
 
+/** ~10 FPS de estado — fluido sem sobrecarregar DB */
+const BROADCAST_MS = 100;
+
 setInterval(async () => {
   try {
     const [worldRes, agentsRes, structRes, entRes, eventsRes] = await Promise.all([
@@ -43,7 +46,7 @@ setInterval(async () => {
       ),
       db.query('SELECT * FROM world_structures'),
       db.query('SELECT * FROM world_entities WHERE hp > 0'),
-      db.query('SELECT * FROM world_events ORDER BY id DESC LIMIT 50'),
+      db.query('SELECT * FROM world_events ORDER BY id DESC LIMIT 40'),
     ]);
     const world = worldRes.rows[0] || { current_tick: 0, weather: 'Desconhecido' };
     if (world.current_tick != null) syncTick(world.current_tick);
@@ -58,7 +61,7 @@ setInterval(async () => {
   } catch {
     /* ignore */
   }
-}, 250);
+}, BROADCAST_MS);
 
 app.get('/api/world', async (_req, res) => {
   try {
@@ -349,5 +352,5 @@ app.post('/api/world/social-brain', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3333;
-server.listen(PORT, () => console.log(`🔥 Servidor 3D + WebSocket na porta ${PORT}`));
+server.listen(PORT, () => console.log(`🔥 Servidor fluido + WebSocket na porta ${PORT}`));
 import './loop';

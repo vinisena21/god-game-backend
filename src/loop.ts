@@ -5,12 +5,20 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const WEATHERS = ['Ensolarado', 'Nublado', 'Chuva leve', 'Tempestade', 'Ensolarado', 'Nublado'];
 
+const DESPERATE_PRAYERS = [
+  'Criador, estou morrendo de fome. Tenha piedade!',
+  'Deus da ilha, a sede me consome. Envie chuva ou água!',
+  'Senhor, minha força acaba. Salve-me deste sofrimento!',
+  'Ouça minha oração... não deixe que eu pereça sozinho.',
+  'Criador onipotente, conceda-me provisões para sobreviver.',
+  'Estou ferido e fraco. Peço a sua graça divina!',
+];
+
 async function gameLoop() {
-  console.log('🚀 Motor físico iniciado (clima + social + IA ocasional)...\n');
+  console.log('🚀 Motor físico iniciado (clima + social + IA + orações)...\n');
 
   while (true) {
     try {
-      // 1. Avança o tick
       await db.query('UPDATE world_state SET current_tick = current_tick + 1 WHERE id = 1');
       const worldRes = await db.query('SELECT current_tick, weather FROM world_state WHERE id = 1');
       const world = worldRes.rows[0];
@@ -19,7 +27,7 @@ async function gameLoop() {
         continue;
       }
 
-      // 2. Clima dinâmico a cada ~20 ticks
+      // Clima dinâmico a cada ~20 ticks
       if (world.current_tick % 20 === 0) {
         const newWeather = WEATHERS[Math.floor(Math.random() * WEATHERS.length)];
         if (newWeather !== world.weather) {
@@ -89,7 +97,6 @@ async function gameLoop() {
       // ===================== FAUNA =====================
       for (const ent of entities) {
         if (ent.type === 'Cervo' || ent.type === 'Lobo') {
-          // Lobos perseguem cervos próximos
           let nx = ent.x;
           let ny = ent.y;
 
@@ -106,7 +113,6 @@ async function gameLoop() {
               nx = Math.round(ent.x + (dx / d) * 3);
               ny = Math.round(ent.y + (dy / d) * 3);
 
-              // Ataque se muito perto
               if (d < 3) {
                 await db.query('UPDATE world_entities SET hp = GREATEST(0, hp - 20) WHERE id = $1', [prey.id]);
                 if (prey.hp - 20 <= 0) {
@@ -123,7 +129,6 @@ async function gameLoop() {
               ny = Math.max(5, Math.min(95, ent.y + (Math.floor(Math.random() * 5) - 2)));
             }
           } else {
-            // Cervo foge de lobos
             const predator = entities.find(
               (e) =>
                 e.type === 'Lobo' &&
@@ -146,7 +151,6 @@ async function gameLoop() {
       }
 
       // ===================== AÇÕES DOS AGENTES =====================
-      // A cada 8 ticks, um agente aleatório pode receber decisão da IA
       const useAI = world.current_tick % 8 === 0 && agents.length > 0;
 
       for (const agent of agents) {
@@ -159,12 +163,11 @@ async function gameLoop() {
         let newIron = agent.iron || 0;
         let logAcao = agent.current_action || 'Explorando a região...';
 
-        // Chuva aumenta sede e dificulta
         if (world.weather?.includes('Chuva') || world.weather?.includes('Tempestade')) {
-          newWater = Math.min(100, newWater + 2); // bebe da chuva
+          newWater = Math.min(100, newWater + 2);
         }
 
-        // Repulsão entre agentes
+        // Repulsão
         for (const other of agents) {
           if (other.id !== agent.id) {
             const dX = newX - other.x;
@@ -272,7 +275,7 @@ async function gameLoop() {
           }
         }
 
-        // Reprodução básica: agentes saudáveis com casa e recursos
+        // Reprodução
         if (
           agent.hp > 70 &&
           newFood > 40 &&
@@ -284,7 +287,6 @@ async function gameLoop() {
           const hasHouse = structures.some((s) => s.agent_name === agent.name);
           if (hasHouse) {
             const babyName = `${agent.name.split(' ')[0]} Jr.`;
-            // Evita duplicatas simples
             const exists = await db.query('SELECT id FROM agents WHERE name = $1', [babyName]);
             if (exists.rows.length === 0) {
               await db.query(
@@ -301,7 +303,34 @@ async function gameLoop() {
           }
         }
 
-        // Decisão de IA ocasional (não todos os ticks para economizar quota)
+        // ========== ORAÇÕES DE DESESPERO ==========
+        // Agentes em perigo oram com frequência maior (sem depender da IA)
+        const isDesperate = agent.hp < 35 || newFood < 10 || newWater < 10;
+        if (isDesperate && Math.random() < 0.22) {
+          // Evita spam: só ora se não orou nos últimos 8 ticks
+          const recentPrayer = await db.query(
+            `SELECT id FROM world_events
+             WHERE type = 'ORAÇÃO' AND message LIKE $1 AND tick > $2
+             LIMIT 1`,
+            [`%${agent.name}%`, world.current_tick - 8]
+          );
+
+          if (recentPrayer.rows.length === 0) {
+            const prayer =
+              DESPERATE_PRAYERS[Math.floor(Math.random() * DESPERATE_PRAYERS.length)];
+            await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'ORAÇÃO', $2)", [
+              world.current_tick,
+              `🙏 ${agent.name}: "${prayer}"`,
+            ]);
+            await db.query(
+              'INSERT INTO agent_memories (agent_id, content, tick_created) VALUES ($1, $2, $3)',
+              [agent.id, `Orei ao Criador: ${prayer}`, world.current_tick]
+            );
+            logAcao = 'Ajoelhado em oração...';
+          }
+        }
+
+        // Decisão de IA ocasional
         if (useAI && Math.random() < 0.35) {
           try {
             const recentEvents = await db.query(
@@ -329,7 +358,7 @@ async function gameLoop() {
               ]);
             }
           } catch {
-            // silencioso — fallback já existe
+            // silencioso
           }
         }
 
@@ -340,7 +369,6 @@ async function gameLoop() {
           newHp = Math.min(100, agent.hp + 4);
         }
 
-        // Tempestade causa dano leve
         if (world.weather === 'Tempestade' && Math.random() < 0.15) {
           newHp = Math.max(0, newHp - 5);
         }
@@ -364,7 +392,7 @@ async function gameLoop() {
       console.error('❌ Erro no loop:', error);
     }
 
-    await sleep(2500); // 1 tick a cada 2.5s
+    await sleep(2500);
   }
 }
 

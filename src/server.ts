@@ -69,6 +69,18 @@ app.get('/api/world/events', async (_req, res) => {
   }
 });
 
+/** Lista orações recentes (últimas 30 do tipo ORAÇÃO) */
+app.get('/api/world/prayers', async (_req, res) => {
+  try {
+    const prayersRes = await db.query(
+      "SELECT * FROM world_events WHERE type = 'ORAÇÃO' ORDER BY id DESC LIMIT 30"
+    );
+    res.json(prayersRes.rows);
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar orações' });
+  }
+});
+
 app.get('/api/world/structures', async (_req, res) => {
   try {
     const structRes = await db.query('SELECT * FROM world_structures');
@@ -151,23 +163,93 @@ app.post('/api/world/reset', async (_req, res) => {
   }
 });
 
+/**
+ * Resposta divina a um agente (oração / milagre direcionado)
+ * Body: {
+ *   message?: string,          // voz divina (texto)
+ *   blessing?: 'heal' | 'food' | 'water' | 'resources' | 'full'  // efeito concreto
+ * }
+ */
 app.post('/api/agents/:id/miracle', async (req, res) => {
-  const agentId = req.params.id;
-  const { message } = req.body;
+  const agentId = Number(req.params.id);
+  const { message, blessing } = req.body as {
+    message?: string;
+    blessing?: 'heal' | 'food' | 'water' | 'resources' | 'full';
+  };
+
+  if (!agentId || Number.isNaN(agentId)) {
+    return res.status(400).json({ error: 'ID de agente inválido' });
+  }
+
   try {
+    const agentRes = await db.query('SELECT * FROM agents WHERE id = $1', [agentId]);
+    const agent = agentRes.rows[0];
+    if (!agent) {
+      return res.status(404).json({ error: 'Agente não encontrado' });
+    }
+
     const worldRes = await db.query('SELECT current_tick FROM world_state WHERE id = 1');
-    await db.query('INSERT INTO agent_memories (agent_id, content, tick_created) VALUES ($1, $2, $3)', [
-      agentId,
-      `VOZ DIVINA: ${message}`,
-      worldRes.rows[0].current_tick,
+    const tick = worldRes.rows[0].current_tick;
+
+    // Efeitos concretos da bênção
+    let effectDesc = '';
+    if (blessing === 'heal' || blessing === 'full') {
+      await db.query('UPDATE agents SET hp = LEAST(100, hp + 40) WHERE id = $1', [agentId]);
+      effectDesc += '❤️ +40 HP ';
+    }
+    if (blessing === 'food' || blessing === 'full') {
+      await db.query('UPDATE agents SET food = LEAST(100, food + 40) WHERE id = $1', [agentId]);
+      effectDesc += '🍖 +40 comida ';
+    }
+    if (blessing === 'water' || blessing === 'full') {
+      await db.query('UPDATE agents SET water = LEAST(100, water + 40) WHERE id = $1', [agentId]);
+      effectDesc += '💧 +40 água ';
+    }
+    if (blessing === 'resources' || blessing === 'full') {
+      await db.query(
+        'UPDATE agents SET wood = wood + 20, iron = iron + 10 WHERE id = $1',
+        [agentId]
+      );
+      effectDesc += '🪵 +20 madeira ⛏️ +10 ferro ';
+    }
+
+    const divineMessage =
+      message?.trim() ||
+      (blessing
+        ? `Receba minha bênção, ${agent.name}.`
+        : `Eu ouvi sua oração, ${agent.name}.`);
+
+    // Memória do agente
+    await db.query(
+      'INSERT INTO agent_memories (agent_id, content, tick_created) VALUES ($1, $2, $3)',
+      [agentId, `VOZ DIVINA: ${divineMessage}${effectDesc ? ` [${effectDesc.trim()}]` : ''}`, tick]
+    );
+
+    // Evento no Livro das Eras
+    await db.query("INSERT INTO world_events (tick, type, message) VALUES ($1, 'RESPOSTA_DIVINA', $2)", [
+      tick,
+      `✨ O Criador respondeu a ${agent.name}: "${divineMessage}"${effectDesc ? ` — ${effectDesc.trim()}` : ''}`,
     ]);
-    res.json({ message: 'Milagre enviado!' });
-  } catch {
-    res.status(500).json({ error: 'Erro' });
+
+    // Atualiza a ação atual do agente para refletir a graça
+    await db.query(
+      "UPDATE agents SET current_action = $1 WHERE id = $2",
+      [`Sentindo a graça divina...`, agentId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Resposta divina enviada!',
+      agent: agent.name,
+      effects: effectDesc.trim() || null,
+    });
+  } catch (error) {
+    console.error('Erro na resposta divina:', error);
+    res.status(500).json({ error: 'Falha ao enviar milagre' });
   }
 });
 
-// Ação divina (Raio / Milagre)
+// Ação divina no mapa (Raio / Milagre de árvore)
 app.post('/api/world/god-action', async (req, res) => {
   const { action, x, y } = req.body;
   try {
@@ -198,7 +280,7 @@ app.post('/api/world/god-action', async (req, res) => {
   }
 });
 
-// Cérebro social — agora com IA real (fallback automático se sem chave)
+// Cérebro social
 app.post('/api/world/social-brain', async (req, res) => {
   const { agentA, agentB, tick } = req.body;
 
@@ -208,7 +290,6 @@ app.post('/api/world/social-brain', async (req, res) => {
 
     const outcome = await getSocialOutcome(agentA, agentB, weather);
 
-    // Atualiza relacionamento
     await db.query(
       `INSERT INTO agent_relationships (agent_a_id, agent_b_id, relationship_score, last_interaction_tick)
        VALUES ($1, $2, $3, $4)
@@ -218,7 +299,6 @@ app.post('/api/world/social-brain', async (req, res) => {
       [agentA.id, agentB.id, outcome.relationChange, tick]
     );
 
-    // Aliança → mesma sociedade
     if (outcome.action === 'ALIANÇA' && outcome.newSociety) {
       await db.query('UPDATE agents SET society = $1 WHERE id IN ($2, $3)', [
         outcome.newSociety,
@@ -227,7 +307,6 @@ app.post('/api/world/social-brain', async (req, res) => {
       ]);
     }
 
-    // Conflito → dano leve
     if (outcome.action === 'CONFLITO') {
       await db.query('UPDATE agents SET hp = GREATEST(0, hp - 15) WHERE id IN ($1, $2)', [
         agentA.id,
@@ -252,5 +331,4 @@ const PORT = process.env.PORT || 3333;
 
 server.listen(PORT, () => console.log(`🔥 Servidor + WebSocket na porta ${PORT}`));
 
-// Importa o loop físico (roda em paralelo)
 import './loop';
